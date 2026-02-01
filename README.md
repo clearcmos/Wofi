@@ -13,7 +13,6 @@ Built specifically for **TBC Classic Anniversary**.
 - **Keyboard-driven** - Navigate with arrow keys or Tab, activate with Enter
 - **Drag to action bar** - Right-drag any result to place it on your bars
 - **Custom keybind** - Set any key combo to open the launcher instantly
-- **Minimap button** - Quick access via left-click, config via right-click
 - **Smart prioritization** - Exact matches first, then prefix, then contains, then fuzzy
 - **Auto-close on combat** - Stays out of your way when the fight starts
 
@@ -32,7 +31,7 @@ Built specifically for **TBC Classic Anniversary**.
 
 ## Usage
 
-Type `/wofi` to open the launcher, or click the minimap button, or use your custom keybind.
+Type `/wofi` to open the launcher, or use your custom keybind.
 
 1. Start typing a spell or item name
 2. Use **Up/Down** or **Tab/Shift+Tab** to navigate
@@ -48,17 +47,15 @@ Type `/wofi` to open the launcher, or click the minimap button, or use your cust
 - `/wofi unbind` - Remove the keybind
 - `/wofi items` - Toggle item search on/off
 - `/wofi refresh` - Rebuild spell/item cache
-- `/wofi minimap` - Toggle minimap button
 - `/wofi help` - Show all commands
 
 ---
 
 ## Configuration
 
-Open with `/wofi config` or **right-click** the minimap button:
+Open with `/wofi config`:
 
 - **Include items** - Toggle bag item search on/off
-- **Minimap button** - Show or hide the minimap icon
 - **Keybind** - View, set, or clear your custom hotkey
 - **Refresh caches** - Manually rebuild spell/item/profession lists
 

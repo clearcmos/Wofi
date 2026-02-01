@@ -9,7 +9,6 @@
 - Keyboard navigation (Up/Down arrows, Tab/Shift-Tab, Enter to activate)
 - Right-drag results to action bars
 - Configurable keybind via `/wofi bind` or config GUI
-- Minimap button (draggable, toggleable)
 - Item search toggle (include/exclude bag items)
 - Auto-close on combat
 - Slash commands: `/wofi`, `/wofi config`, `/wofi bind`, `/wofi items`, etc.

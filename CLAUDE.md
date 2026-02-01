@@ -15,8 +15,7 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 3. **Search UI** - Minimalist popup with EditBox for typing and results frame
 4. **SecureActionButtons** - Result buttons use SecureActionButtonTemplate for spells (`type="spell"`) and items (`type="item"`)
 5. **Keybind System** - Custom keybind stored in SavedVariables, applied via SetBindingClick on a macro button
-6. **Minimap Button** - Draggable minimap icon for quick access (left-click toggles, right-click opens config)
-7. **Config GUI** - Options panel for settings (opened via `/wofi config` or right-click minimap)
+6. **Config GUI** - Options panel for settings (opened via `/wofi config`)
 
 ### WoW API Constraints
 - **Spell/item usage requires SecureActionButtonTemplate** - Cannot call CastSpell() or UseItem() directly
@@ -28,8 +27,6 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 
 ## SavedVariables
 `WofiDB` stores:
-- `minimapPos` (number) - Angle in degrees for minimap button position
-- `showMinimap` (boolean) - Minimap button visibility
 - `keybind` (string|nil) - Custom keybind like "ALT-S"
 - `includeItems` (boolean) - Whether to include items in search results
 
@@ -45,7 +42,6 @@ Each search result has an `entryType` field:
 - `/wofi unbind` - Remove keybind
 - `/wofi items` - Toggle item search
 - `/wofi refresh` - Rebuild caches
-- `/wofi minimap` - Toggle minimap button
 - `/wofi help` - Show help
 
 ## Events Handled
@@ -71,7 +67,6 @@ Each search result has an `entryType` field:
 ## Config GUI
 The config panel (`/wofi config`) includes:
 - Checkbox: Include items in search
-- Checkbox: Show minimap button
 - Keybind section with current binding display, Set/Clear buttons
 - Refresh caches button
 - Close button
@@ -115,9 +110,8 @@ This creates `~/Wofi-x.x.x.zip` containing a `Wofi/` folder with the addon files
 8. Test `/wofi items` toggle
 9. Verify BAG_UPDATE_DELAYED rebuilds item cache
 10. Test `/wofi config` opens GUI
-11. Test right-click minimap opens config
-12. Test keybind via config GUI
-13. Enter combat - verify Wofi auto-closes with message
+11. Test keybind via config GUI
+12. Enter combat - verify Wofi auto-closes with message
 
 ## WoW API Reference
 
