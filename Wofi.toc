@@ -1,4 +1,4 @@
-## Interface: 11508
+## Interface: 20505
 ## Title: Wofi
 ## Notes: Spotlight/Rofi-style spell & item launcher - WoW + Rofi = Wofi
 ## Author: clearcmos

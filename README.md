@@ -1,92 +1,82 @@
 # Wofi
 
-A Spotlight/Rofi-style spell and item launcher for WoW Classic Era. WoW + Rofi = Wofi.
+**Wofi** is a Spotlight/Rofi-style launcher for spells, items, and professions. Press a key, type a few letters, hit Enter. No more digging through your spellbook or bags for utility spells, consumables, and profession abilities.
 
-## Why This Addon?
+Built specifically for **TBC Classic Anniversary**.
 
-**The problem:** Your spellbook has dozens of spells, your bags have consumables and utility items, but your action bars have limited space. Utility spells and items don't need instant combat access - but digging through the spellbook or bags every time is tedious.
+---
 
-**The solution:** Wofi gives you a quick keyboard-driven launcher. Press a key, type a few letters, hit Enter. Done.
+## Features
 
-### Ideal Use Cases
+- **Fuzzy search** - Type "fb" to find "Fireball", "mana" to find potions and conjured gems
+- **Spells, items, and professions** - Search your entire spellbook, usable bag items, and profession abilities in one place
+- **Keyboard-driven** - Navigate with arrow keys or Tab, activate with Enter
+- **Drag to action bar** - Right-drag any result to place it on your bars
+- **Custom keybind** - Set any key combo to open the launcher instantly
+- **Minimap button** - Quick access via left-click, config via right-click
+- **Smart prioritization** - Exact matches first, then prefix, then contains, then fuzzy
+- **Auto-close on combat** - Stays out of your way when the fight starts
 
-- **Mage teleports/portals** - No need for 12 buttons when you can just type "iron" → Ironforge
+---
+
+## Ideal Use Cases
+
+- **Mage teleports/portals** - No need for 12 buttons, just type "iron" for Ironforge
 - **Consumables** - Potions, food, bandages, quest items
 - **Profession spells** - Cooking fire, fishing, smelting, disenchanting
 - **Hunter tracking** - Quickly swap between tracking types
-- **Pre-combat buffs** - Find that one buff you need without hunting through tabs
+- **Pre-combat buffs** - Find that one buff without hunting through tabs
 - **Alts** - When you can't remember where Blizzard put everything
 
-### Not Designed For
-
-- Combat rotations (action bars + muscle memory are faster)
-- Time-sensitive abilities
-- Anything you need instant access to mid-fight
-
-This addon solves the "I don't want 6 portal spells on my bars, but I also don't want to dig through my spellbook" problem. That's it. Simple, focused, useful.
-
-## Installation
-
-1. Download and extract to `Interface/AddOns/Wofi`
-2. Restart WoW or `/reload`
+---
 
 ## Usage
 
-### Opening the Launcher
-- Type `/wofi`
-- Click the minimap button
-- Use your custom keybind (set with `/wofi bind` or via config)
+Type `/wofi` to open the launcher, or click the minimap button, or use your custom keybind.
 
-### Casting Spells / Using Items
 1. Start typing a spell or item name
-2. Use **Up/Down arrows** or **Tab/Shift+Tab** to navigate results
+2. Use **Up/Down** or **Tab/Shift+Tab** to navigate
 3. Press **Enter** or **click** to cast/use
-4. Press **Escape** to close
+4. **Right-drag** to place on action bar
+5. Press **Escape** to close
 
-Items are marked with `[item]` in the results list.
+### Slash Commands
 
-### Commands
+- `/wofi` - Toggle the launcher
+- `/wofi config` - Open configuration GUI
+- `/wofi bind` - Set a custom keybind
+- `/wofi unbind` - Remove the keybind
+- `/wofi items` - Toggle item search on/off
+- `/wofi refresh` - Rebuild spell/item cache
+- `/wofi minimap` - Toggle minimap button
+- `/wofi help` - Show all commands
 
-| Command | Description |
-|---------|-------------|
-| `/wofi` | Toggle the launcher |
-| `/wofi config` | Open the configuration GUI |
-| `/wofi bind` | Set a custom keybind |
-| `/wofi unbind` | Remove the keybind |
-| `/wofi items` | Toggle item search (on by default) |
-| `/wofi refresh` | Rebuild spell/item cache |
-| `/wofi minimap` | Toggle minimap button |
-| `/wofi help` | Show help |
+---
 
-### Configuration GUI
+## Configuration
 
-Open the config panel with `/wofi config` or **right-click** the minimap button. Options include:
-- Toggle item search on/off
-- Toggle minimap button visibility
-- View/set/clear custom keybind
-- Refresh spell and item caches
+Open with `/wofi config` or **right-click** the minimap button:
 
-### Tips
+- **Include items** - Toggle bag item search on/off
+- **Minimap button** - Show or hide the minimap icon
+- **Keybind** - View, set, or clear your custom hotkey
+- **Refresh caches** - Manually rebuild spell/item/profession lists
 
-- The launcher is **draggable** - position it wherever you like
-- Search is substring-based: "mana" finds "Mana Potion", "Conjure Mana Ruby", etc.
-- Only **usable** items appear (items with "Use:" effects, quest items, readable items)
-- Caches update automatically when you learn spells or your bags change
-- Works great in a macro: `/wofi`
+---
 
 ## Limitations
 
-- **Cannot be used during combat** - This is a WoW security restriction, not a bug. Secure action buttons cannot be modified mid-combat.
-- **Requires clicking or Enter** - Due to WoW's security model, spells/items can only be used via hardware events (clicks/keypresses on secure buttons)
+- **Cannot be used during combat** - WoW security restriction, not a bug
+- **Auto-closes when combat starts** - Secure frames can't be modified mid-fight
 
-## Technical Details
-
-Built for WoW Classic Era (Interface 11508). Uses `SecureActionButtonTemplate` with `type="spell"` and `type="item"` for secure spell casting and item usage.
-
-## Author
-
-clearcmos
+---
 
 ## License
 
-MIT - Do whatever you want with it.
+MIT License - Open source and free to use.
+
+---
+
+## Feedback & Issues
+
+Found a bug or have a suggestion? Post a comment on CurseForge or open an issue on GitHub: https://github.com/clearcmos/Wofi

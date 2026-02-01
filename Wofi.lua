@@ -1,13 +1,11 @@
 -- Wofi: Spotlight/Rofi-style spell & item launcher for WoW Classic
--- /wofi to open, or use keybind, or click minimap icon
+-- /wofi to open, or use keybind
 -- Uses SecureActionButtons to cast spells and use items (Enter or click)
 
 local addonName, addon = ...
 
 -- Saved variables defaults
 local defaults = {
-    minimapPos = 220,
-    showMinimap = true,
     keybind = nil,
     includeItems = true,
 }
@@ -26,6 +24,7 @@ local resultButtons = {}
 local selectedIndex = 1
 local currentResults = {}
 local MAX_RESULTS = 8
+local initializing = false
 
 -- Config frame
 local configFrame = nil
@@ -51,11 +50,13 @@ local function BuildSpellCache()
 
             if spellName and not IsPassiveSpell(slot, BOOKTYPE_SPELL) then
                 local spellTexture = GetSpellTexture(slot, BOOKTYPE_SPELL)
+                local _, spellID = GetSpellBookItemInfo(slot, BOOKTYPE_SPELL)
                 table.insert(spellCache, {
                     entryType = TYPE_SPELL,
                     name = spellName,
                     subName = subSpellName or "",
                     slot = slot,
+                    spellID = spellID,
                     texture = spellTexture,
                     nameLower = spellName:lower(),
                 })
@@ -116,6 +117,8 @@ local function BuildItemCache()
                                 entryType = TYPE_ITEM,
                                 name = itemName,
                                 itemID = info.itemID,
+                                bagID = bagID,
+                                slotID = slotID,
                                 texture = itemTexture or info.iconFileID,
                                 nameLower = itemName:lower(),
                             })
@@ -135,6 +138,35 @@ end
 -- Search
 -- ============================================================================
 
+-- Fuzzy match: checks if all query characters appear in order in target
+-- Returns match score (lower = better) or nil if no match
+local function FuzzyMatch(query, target)
+    local queryLen = #query
+    local targetLen = #target
+    if queryLen == 0 then return 0 end
+    if queryLen > targetLen then return nil end
+
+    local queryIdx = 1
+    local score = 0
+    local lastMatchIdx = 0
+
+    for i = 1, targetLen do
+        if target:sub(i, i) == query:sub(queryIdx, queryIdx) then
+            -- Penalty for gaps between matched characters
+            if lastMatchIdx > 0 then
+                score = score + (i - lastMatchIdx - 1)
+            end
+            lastMatchIdx = i
+            queryIdx = queryIdx + 1
+            if queryIdx > queryLen then
+                return score
+            end
+        end
+    end
+
+    return nil -- Not all characters matched
+end
+
 local function Search(query)
     local results = {}
     if not query or query == "" then return results end
@@ -143,6 +175,7 @@ local function Search(query)
     local exactMatches = {}
     local startMatches = {}
     local containsMatches = {}
+    local fuzzyMatches = {}
 
     -- Search spells
     for _, entry in ipairs(spellCache) do
@@ -152,6 +185,11 @@ local function Search(query)
             table.insert(startMatches, entry)
         elseif entry.nameLower:find(queryLower, 1, true) then
             table.insert(containsMatches, entry)
+        else
+            local score = FuzzyMatch(queryLower, entry.nameLower)
+            if score then
+                table.insert(fuzzyMatches, { entry = entry, score = score })
+            end
         end
     end
 
@@ -164,11 +202,19 @@ local function Search(query)
                 table.insert(startMatches, entry)
             elseif entry.nameLower:find(queryLower, 1, true) then
                 table.insert(containsMatches, entry)
+            else
+                local score = FuzzyMatch(queryLower, entry.nameLower)
+                if score then
+                    table.insert(fuzzyMatches, { entry = entry, score = score })
+                end
             end
         end
     end
 
-    -- Priority: exact > starts with > contains
+    -- Sort fuzzy matches by score (lower = better match)
+    table.sort(fuzzyMatches, function(a, b) return a.score < b.score end)
+
+    -- Priority: exact > starts with > contains > fuzzy
     for _, entry in ipairs(exactMatches) do
         if #results < MAX_RESULTS then table.insert(results, entry) end
     end
@@ -178,35 +224,160 @@ local function Search(query)
     for _, entry in ipairs(containsMatches) do
         if #results < MAX_RESULTS then table.insert(results, entry) end
     end
+    for _, match in ipairs(fuzzyMatches) do
+        if #results < MAX_RESULTS then table.insert(results, match.entry) end
+    end
 
     return results
 end
+
+-- ============================================================================
+-- UI Styling (Quartz-inspired)
+-- ============================================================================
+
+-- Shared media paths
+local BAR_TEXTURE = "Interface\\TargetingFrame\\UI-StatusBar"
+local FLAT_TEXTURE = "Interface\\Buttons\\WHITE8x8"
+
+-- Color palette
+local COLORS = {
+    bg = { 0.10, 0.10, 0.12, 0.95 },  -- Flat dark background
+    border = { 0.30, 0.30, 0.35, 1 },
+    borderGlow = { 0.4, 0.6, 1.0, 0.25 },
+    searchIcon = { 0.85, 0.85, 0.9 },  -- Near-white icon
+    selected = { 0.3, 0.5, 0.9, 0.4 },
+    highlight = { 1, 1, 1, 0.08 },
+}
+
+-- Create clean flat border with subtle glow
+local function ApplyGlowBorder(frame, size)
+    size = size or 1
+
+    -- Outer glow (subtle blue tint)
+    local glow = frame:CreateTexture(nil, "BACKGROUND", nil, -6)
+    glow:SetPoint("TOPLEFT", -1, 1)
+    glow:SetPoint("BOTTOMRIGHT", 1, -1)
+    glow:SetTexture(FLAT_TEXTURE)
+    glow:SetVertexColor(COLORS.borderGlow[1], COLORS.borderGlow[2], COLORS.borderGlow[3], COLORS.borderGlow[4])
+    frame.glowTexture = glow
+
+    -- Clean border edge
+    local edge = frame:CreateTexture(nil, "BACKGROUND", nil, -5)
+    edge:SetPoint("TOPLEFT", 0, 0)
+    edge:SetPoint("BOTTOMRIGHT", 0, 0)
+    edge:SetTexture(FLAT_TEXTURE)
+    edge:SetVertexColor(COLORS.border[1], COLORS.border[2], COLORS.border[3], COLORS.border[4])
+    frame.edgeTexture = edge
+
+    -- Flat dark background
+    local inner = frame:CreateTexture(nil, "BACKGROUND", nil, -4)
+    inner:SetPoint("TOPLEFT", size, -size)
+    inner:SetPoint("BOTTOMRIGHT", -size, size)
+    inner:SetTexture(FLAT_TEXTURE)
+    inner:SetVertexColor(COLORS.bg[1], COLORS.bg[2], COLORS.bg[3], COLORS.bg[4])
+    frame.innerTexture = inner
+end
+
+-- Create sharp geometric magnifying glass icon
+local function CreateSearchIcon(parent)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetSize(18, 18)
+
+    local iconColor = { 0.8, 0.8, 0.85 }
+
+    -- Outer circle (filled)
+    local outer = container:CreateTexture(nil, "ARTWORK", nil, 1)
+    outer:SetSize(14, 14)
+    outer:SetPoint("TOPLEFT", 0, 0)
+    outer:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask")
+    outer:SetVertexColor(iconColor[1], iconColor[2], iconColor[3], 1)
+    container.outer = outer
+
+    -- Inner circle (punches hole to make ring)
+    local inner = container:CreateTexture(nil, "ARTWORK", nil, 2)
+    inner:SetSize(9, 9)
+    inner:SetPoint("CENTER", outer, "CENTER", 0, 0)
+    inner:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask")
+    inner:SetVertexColor(COLORS.bg[1], COLORS.bg[2], COLORS.bg[3], 1)
+    container.inner = inner
+
+    -- Handle (diagonal line)
+    local handle = container:CreateTexture(nil, "ARTWORK", nil, 3)
+    handle:SetSize(10, 2.5)
+    handle:SetPoint("TOPLEFT", outer, "BOTTOMRIGHT", -4, 2)
+    handle:SetTexture(FLAT_TEXTURE)
+    handle:SetVertexColor(iconColor[1], iconColor[2], iconColor[3], 1)
+    handle:SetRotation(math.rad(-45))
+    container.handle = handle
+
+    return container
+end
+
+-- Fade animation state
+local fadeAnimations = {}
+
+local function StartFadeIn(frame, duration)
+    duration = duration or 0.15
+    fadeAnimations[frame] = {
+        elapsed = 0,
+        duration = duration,
+        startAlpha = 0,
+        endAlpha = 1,
+    }
+    frame:SetAlpha(0)
+    -- Don't call Show() here - OnShow triggers this, frame is already showing
+end
+
+local function UpdateFadeAnimations(self, elapsed)
+    for frame, anim in pairs(fadeAnimations) do
+        anim.elapsed = anim.elapsed + elapsed
+        local progress = math.min(anim.elapsed / anim.duration, 1)
+        -- Ease out quad for smooth deceleration
+        local eased = 1 - (1 - progress) * (1 - progress)
+        local alpha = anim.startAlpha + (anim.endAlpha - anim.startAlpha) * eased
+        frame:SetAlpha(alpha)
+
+        if progress >= 1 then
+            fadeAnimations[frame] = nil
+            frame:SetAlpha(anim.endAlpha)
+        end
+    end
+end
+
+-- Animation frame (created once)
+local animationFrame = CreateFrame("Frame")
+animationFrame:SetScript("OnUpdate", UpdateFadeAnimations)
 
 -- ============================================================================
 -- UI Creation
 -- ============================================================================
 
 local function CreateResultButton(parent, index)
-    -- Use SecureActionButtonTemplate for spell/item usage
+    -- Use SecureActionButtonTemplate for spell/item casting
     local btn = CreateFrame("Button", "WofiResult"..index, parent, "SecureActionButtonTemplate")
     btn:SetHeight(28)
     btn:SetPoint("LEFT", 4, 0)
     btn:SetPoint("RIGHT", -4, 0)
-    btn:RegisterForClicks("AnyUp", "AnyDown")
+    -- Left-click DOWN = cast/use spell/item (action fires immediately)
+    -- Right-drag = pick up spell/item for action bar placement
+    btn:RegisterForClicks("LeftButtonDown")
+    btn:RegisterForDrag("RightButton")
 
     -- Default to spell type
     btn:SetAttribute("type", "spell")
     btn:SetAttribute("spell", "")
 
-    -- Highlight texture
+    -- Highlight texture (subtle)
     btn.highlight = btn:CreateTexture(nil, "HIGHLIGHT")
     btn.highlight:SetAllPoints()
-    btn.highlight:SetColorTexture(1, 1, 1, 0.1)
+    btn.highlight:SetTexture(BAR_TEXTURE)
+    btn.highlight:SetVertexColor(COLORS.highlight[1], COLORS.highlight[2], COLORS.highlight[3], COLORS.highlight[4])
 
-    -- Selected texture
+    -- Selected texture (Quartz-style gradient)
     btn.selected = btn:CreateTexture(nil, "BACKGROUND")
     btn.selected:SetAllPoints()
-    btn.selected:SetColorTexture(0.3, 0.6, 1, 0.3)
+    btn.selected:SetTexture(BAR_TEXTURE)
+    btn.selected:SetVertexColor(COLORS.selected[1], COLORS.selected[2], COLORS.selected[3], COLORS.selected[4])
     btn.selected:Hide()
 
     -- Icon
@@ -227,7 +398,7 @@ local function CreateResultButton(parent, index)
     btn.typeText:SetPoint("RIGHT", -6, 0)
     btn.typeText:SetTextColor(0.5, 0.5, 0.5)
 
-    -- Post-click: hide frame after use
+    -- PostClick: hide frame after secure action executes
     btn:SetScript("PostClick", function(self)
         if WofiFrame:IsShown() then
             WofiFrame:Hide()
@@ -244,12 +415,35 @@ local function CreateResultButton(parent, index)
             elseif self.entry.entryType == TYPE_ITEM then
                 GameTooltip:SetItemByID(self.entry.itemID)
             end
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("Left-click to use, Right-drag to action bar", 0.5, 0.8, 1)
             GameTooltip:Show()
         end
     end)
 
     btn:SetScript("OnLeave", function()
         GameTooltip:Hide()
+    end)
+
+    btn:SetScript("OnDragStart", function(self)
+        if InCombatLockdown() then return end
+        if not self.entry then return end
+
+        if self.entry.entryType == TYPE_SPELL then
+            PickupSpellBookItem(self.entry.slot, BOOKTYPE_SPELL)
+        elseif self.entry.entryType == TYPE_ITEM then
+            -- Find current bag/slot for this item (may have moved since cache)
+            for bagID = 0, 4 do
+                local numSlots = C_Container.GetContainerNumSlots(bagID)
+                for slotID = 1, numSlots do
+                    local info = C_Container.GetContainerItemInfo(bagID, slotID)
+                    if info and info.itemID == self.entry.itemID then
+                        C_Container.PickupContainerItem(bagID, slotID)
+                        return
+                    end
+                end
+            end
+        end
     end)
 
     return btn
@@ -266,9 +460,9 @@ local function UpdateEnterBinding()
 end
 
 local function CreateUI()
-    -- Main frame
-    WofiFrame = CreateFrame("Frame", "WofiFrame", UIParent, "BackdropTemplate")
-    WofiFrame:SetSize(350, 50)
+    -- Main frame (no backdrop template - we draw our own)
+    WofiFrame = CreateFrame("Frame", "WofiFrame", UIParent)
+    WofiFrame:SetSize(360, 46)
     WofiFrame:SetPoint("CENTER", 0, 200)
     WofiFrame:SetFrameStrata("DIALOG")
     WofiFrame:SetMovable(true)
@@ -276,41 +470,28 @@ local function CreateUI()
     WofiFrame:SetClampedToScreen(true)
     WofiFrame:Hide()
 
-    WofiFrame:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-        edgeFile = "Interface\\Buttons\\WHITE8x8",
-        edgeSize = 1,
-    })
-    WofiFrame:SetBackdropColor(0.1, 0.1, 0.12, 0.95)
-    WofiFrame:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
+    -- Apply Quartz-style border with glow
+    ApplyGlowBorder(WofiFrame, 1)
 
-    -- Search icon
-    local searchIcon = WofiFrame:CreateTexture(nil, "ARTWORK")
-    searchIcon:SetSize(20, 20)
-    searchIcon:SetPoint("LEFT", 12, 0)
-    searchIcon:SetTexture("Interface\\Common\\UI-Searchbox-Icon")
-    searchIcon:SetVertexColor(0.6, 0.6, 0.6)
+    -- Search icon (bright and clean)
+    local searchIcon = CreateSearchIcon(WofiFrame)
+    searchIcon:SetPoint("LEFT", 14, 0)
+    WofiFrame.searchIcon = searchIcon
 
     -- Search box
     searchBox = CreateFrame("EditBox", "WofiSearchBox", WofiFrame)
     searchBox:SetSize(300, 30)
-    searchBox:SetPoint("LEFT", searchIcon, "RIGHT", 8, 0)
-    searchBox:SetPoint("RIGHT", -12, 0)
+    searchBox:SetPoint("LEFT", searchIcon, "RIGHT", 10, 0)
+    searchBox:SetPoint("RIGHT", -14, 0)
     searchBox:SetFontObject(GameFontNormalLarge)
-    searchBox:SetAutoFocus(true)
+    searchBox:SetAutoFocus(false)
     searchBox:SetTextInsets(0, 0, 0, 0)
 
-    -- Results frame
-    resultsFrame = CreateFrame("Frame", "WofiResults", WofiFrame, "BackdropTemplate")
+    -- Results frame (matching Quartz style)
+    resultsFrame = CreateFrame("Frame", "WofiResults", WofiFrame)
     resultsFrame:SetPoint("TOPLEFT", WofiFrame, "BOTTOMLEFT", 0, -2)
     resultsFrame:SetPoint("TOPRIGHT", WofiFrame, "BOTTOMRIGHT", 0, -2)
-    resultsFrame:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-        edgeFile = "Interface\\Buttons\\WHITE8x8",
-        edgeSize = 1,
-    })
-    resultsFrame:SetBackdropColor(0.1, 0.1, 0.12, 0.95)
-    resultsFrame:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
+    ApplyGlowBorder(resultsFrame, 1)
     resultsFrame:Hide()
 
     -- Create result buttons (SecureActionButtons)
@@ -326,6 +507,7 @@ local function CreateUI()
 
     -- Scripts
     searchBox:SetScript("OnTextChanged", function(self)
+        if initializing then return end
         local text = self:GetText()
         currentResults = Search(text)
         selectedIndex = 1
@@ -365,7 +547,11 @@ local function CreateUI()
         end
     end)
 
-    WofiFrame:SetScript("OnShow", function()
+    WofiFrame:SetScript("OnShow", function(self)
+        initializing = true
+        -- Start fade-in animation
+        StartFadeIn(self, 0.12)
+
         if not spellCacheBuilt then
             BuildSpellCache()
         end
@@ -373,17 +559,18 @@ local function CreateUI()
             BuildItemCache()
         end
         searchBox:SetText("")
-        searchBox:SetFocus()
         currentResults = {}
         selectedIndex = 1
         addon:UpdateResults()
-        -- Clear any character that got typed from the keybind key
-        C_Timer.After(0.01, function()
-            if WofiFrame:IsShown() and searchBox:GetText() ~= "" then
+        -- Delay focus to avoid capturing the keybind keypress
+        C_Timer.After(0.02, function()
+            if WofiFrame:IsShown() then
                 searchBox:SetText("")
+                searchBox:SetFocus()
                 currentResults = {}
                 addon:UpdateResults()
             end
+            initializing = false
         end)
     end)
 
@@ -404,6 +591,7 @@ function addon:UpdateResults()
         resultsFrame:Hide()
         -- Clear all buttons
         for i = 1, MAX_RESULTS do
+            resultButtons[i].entry = nil
             resultButtons[i]:SetAttribute("type", "spell")
             resultButtons[i]:SetAttribute("spell", "")
             resultButtons[i]:SetAttribute("item", nil)
@@ -427,7 +615,12 @@ function addon:UpdateResults()
                 btn:SetAttribute("type", "spell")
                 btn:SetAttribute("spell", entry.name)
                 btn:SetAttribute("item", nil)
-                btn.typeText:SetText("")
+                -- Show spell rank if available
+                if entry.subName and entry.subName ~= "" then
+                    btn.typeText:SetText(entry.subName)
+                else
+                    btn.typeText:SetText("")
+                end
             elseif entry.entryType == TYPE_ITEM then
                 btn:SetAttribute("type", "item")
                 btn:SetAttribute("item", entry.name)
@@ -475,8 +668,8 @@ end
 local function CreateConfigFrame()
     if configFrame then return end
 
-    configFrame = CreateFrame("Frame", "WofiConfigFrame", UIParent, "BackdropTemplate")
-    configFrame:SetSize(300, 280)
+    configFrame = CreateFrame("Frame", "WofiConfigFrame", UIParent)
+    configFrame:SetSize(300, 250)
     configFrame:SetPoint("CENTER")
     configFrame:SetFrameStrata("DIALOG")
     configFrame:SetMovable(true)
@@ -484,23 +677,19 @@ local function CreateConfigFrame()
     configFrame:SetClampedToScreen(true)
     configFrame:Hide()
 
-    configFrame:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-        edgeFile = "Interface\\Buttons\\WHITE8x8",
-        edgeSize = 2,
-    })
-    configFrame:SetBackdropColor(0.1, 0.1, 0.12, 0.98)
-    configFrame:SetBackdropBorderColor(0.4, 0.4, 0.45, 1)
+    -- Quartz-style border
+    ApplyGlowBorder(configFrame, 1)
 
     -- Title bar
-    local titleBar = CreateFrame("Frame", nil, configFrame, "BackdropTemplate")
+    local titleBar = CreateFrame("Frame", nil, configFrame)
     titleBar:SetHeight(28)
-    titleBar:SetPoint("TOPLEFT", 0, 0)
-    titleBar:SetPoint("TOPRIGHT", 0, 0)
-    titleBar:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-    })
-    titleBar:SetBackdropColor(0.2, 0.2, 0.25, 1)
+    titleBar:SetPoint("TOPLEFT", 1, -1)
+    titleBar:SetPoint("TOPRIGHT", -1, -1)
+
+    local titleBg = titleBar:CreateTexture(nil, "BACKGROUND")
+    titleBg:SetAllPoints()
+    titleBg:SetTexture(BAR_TEXTURE)
+    titleBg:SetVertexColor(0.15, 0.15, 0.18, 1)
     titleBar:EnableMouse(true)
     titleBar:RegisterForDrag("LeftButton")
     titleBar:SetScript("OnDragStart", function() configFrame:StartMoving() end)
@@ -530,19 +719,6 @@ local function CreateConfigFrame()
             WofiDB.includeItems = val
             if val and not itemCacheBuilt then
                 BuildItemCache()
-            end
-        end)
-    yPos = yPos - 30
-
-    -- Show Minimap checkbox
-    local minimapCb = CreateCheckbox(configFrame, "Show minimap button", yPos,
-        function() return WofiDB.showMinimap end,
-        function(val)
-            WofiDB.showMinimap = val
-            if val then
-                _G["WofiMinimapButton"]:Show()
-            else
-                _G["WofiMinimapButton"]:Hide()
             end
         end)
     yPos = yPos - 40
@@ -623,7 +799,6 @@ local function CreateConfigFrame()
 
     configFrame:SetScript("OnShow", function()
         itemsCb:SetChecked(WofiDB.includeItems)
-        minimapCb:SetChecked(WofiDB.showMinimap)
         UpdateKeybindDisplay()
         UpdateStats()
     end)
@@ -635,87 +810,6 @@ end
 function addon:ShowConfig()
     CreateConfigFrame()
     configFrame:Show()
-end
-
--- ============================================================================
--- Minimap Button
--- ============================================================================
-
-local minimapButton
-
-local function CreateMinimapButton()
-    minimapButton = CreateFrame("Button", "WofiMinimapButton", Minimap)
-    minimapButton:SetSize(32, 32)
-    minimapButton:SetFrameStrata("MEDIUM")
-    minimapButton:SetFrameLevel(8)
-    minimapButton:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-
-    local overlay = minimapButton:CreateTexture(nil, "OVERLAY")
-    overlay:SetSize(53, 53)
-    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-    overlay:SetPoint("TOPLEFT")
-
-    local icon = minimapButton:CreateTexture(nil, "BACKGROUND")
-    icon:SetSize(20, 20)
-    icon:SetTexture("Interface\\Icons\\INV_Misc_Book_09")
-    icon:SetPoint("CENTER", 0, 0)
-    minimapButton.icon = icon
-
-    local function UpdatePosition()
-        local angle = math.rad(WofiDB.minimapPos)
-        local x = math.cos(angle) * 80
-        local y = math.sin(angle) * 80
-        minimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
-    end
-
-    minimapButton:RegisterForDrag("LeftButton")
-    minimapButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-
-    minimapButton:SetScript("OnDragStart", function(self)
-        self.dragging = true
-    end)
-
-    minimapButton:SetScript("OnDragStop", function(self)
-        self.dragging = false
-    end)
-
-    minimapButton:SetScript("OnUpdate", function(self)
-        if self.dragging then
-            local mx, my = Minimap:GetCenter()
-            local px, py = GetCursorPosition()
-            local scale = Minimap:GetEffectiveScale()
-            px, py = px / scale, py / scale
-            WofiDB.minimapPos = math.deg(math.atan2(py - my, px - mx))
-            UpdatePosition()
-        end
-    end)
-
-    minimapButton:SetScript("OnClick", function(self, button)
-        if button == "LeftButton" then
-            addon:Toggle()
-        elseif button == "RightButton" then
-            addon:ShowConfig()
-        end
-    end)
-
-    minimapButton:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:AddLine("Wofi", 1, 1, 1)
-        GameTooltip:AddLine("Left-click: Open launcher", 0.8, 0.8, 0.8)
-        GameTooltip:AddLine("Right-click: Options", 0.8, 0.8, 0.8)
-        GameTooltip:AddLine("Drag: Move button", 0.8, 0.8, 0.8)
-        GameTooltip:Show()
-    end)
-
-    minimapButton:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
-
-    UpdatePosition()
-
-    if not WofiDB.showMinimap then
-        minimapButton:Hide()
-    end
 end
 
 -- ============================================================================
@@ -731,7 +825,7 @@ local function CreateToggleButton()
     toggleButton = CreateFrame("Button", "WofiToggleButton", UIParent, "SecureActionButtonTemplate")
     toggleButton:SetAttribute("type", "macro")
     toggleButton:SetAttribute("macrotext", "/wofi")
-    toggleButton:RegisterForClicks("AnyUp")
+    toggleButton:RegisterForClicks("AnyDown")
     toggleButton:Hide()
 end
 
@@ -745,20 +839,15 @@ end
 local function SetupKeybindListener()
     if bindingListener then return end
 
-    bindingListener = CreateFrame("Frame", "WofiBindListener", UIParent, "BackdropTemplate")
+    bindingListener = CreateFrame("Frame", "WofiBindListener", UIParent)
     bindingListener:SetSize(300, 100)
     bindingListener:SetPoint("CENTER")
     bindingListener:SetFrameStrata("DIALOG")
     bindingListener:EnableKeyboard(true)
     bindingListener:Hide()
 
-    bindingListener:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-        edgeFile = "Interface\\Buttons\\WHITE8x8",
-        edgeSize = 2,
-    })
-    bindingListener:SetBackdropColor(0.1, 0.1, 0.15, 0.95)
-    bindingListener:SetBackdropBorderColor(0.4, 0.6, 1, 1)
+    -- Quartz-style border with accent glow
+    ApplyGlowBorder(bindingListener, 1)
 
     local text = bindingListener:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     text:SetPoint("CENTER", 0, 10)
@@ -822,6 +911,10 @@ function Wofi_Toggle()
     if WofiFrame and WofiFrame:IsShown() then
         WofiFrame:Hide()
     elseif WofiFrame then
+        if InCombatLockdown() then
+            print("|cff00ff00Wofi:|r |cffff6666Must be out of combat|r")
+            return
+        end
         if not spellCacheBuilt then
             BuildSpellCache()
         end
@@ -840,6 +933,10 @@ function addon:Toggle()
     if WofiFrame:IsShown() then
         WofiFrame:Hide()
     else
+        if InCombatLockdown() then
+            print("|cff00ff00Wofi:|r |cffff6666Must be out of combat|r")
+            return
+        end
         if not spellCacheBuilt then
             BuildSpellCache()
         end
@@ -873,15 +970,6 @@ SlashCmdList["WOFI"] = function(msg)
         addon:ShowConfig()
     elseif msg == "refresh" then
         addon:RefreshCache()
-    elseif msg == "minimap" then
-        WofiDB.showMinimap = not WofiDB.showMinimap
-        if WofiDB.showMinimap then
-            minimapButton:Show()
-            print("|cff00ff00Wofi:|r Minimap button shown")
-        else
-            minimapButton:Hide()
-            print("|cff00ff00Wofi:|r Minimap button hidden")
-        end
     elseif msg == "items" then
         WofiDB.includeItems = not WofiDB.includeItems
         if WofiDB.includeItems then
@@ -909,10 +997,10 @@ SlashCmdList["WOFI"] = function(msg)
         print("  /wofi unbind - Remove keybind")
         print("  /wofi items - Toggle item search (" .. (WofiDB.includeItems and "ON" or "OFF") .. ")")
         print("  /wofi refresh - Refresh cache")
-        print("  /wofi minimap - Toggle minimap button")
         print("  /wofi help - Show this help")
         print("")
-        print("|cff00ff00Usage:|r Type to search, Up/Down to select, Enter or Click to use")
+        print("|cff00ff00Usage:|r Type to search, Up/Down to select, Enter/Left-click to use")
+        print("|cff00ff00       |r Right-drag to place on action bar")
         if WofiDB.keybind then
             print("|cff00ff00Current keybind:|r " .. WofiDB.keybind)
         end
@@ -928,9 +1016,10 @@ end
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
-eventFrame:RegisterEvent("LEARNED_SPELL_IN_TAB")
+eventFrame:RegisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
 eventFrame:RegisterEvent("SPELLS_CHANGED")
 eventFrame:RegisterEvent("BAG_UPDATE_DELAYED")
+eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
@@ -945,7 +1034,6 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         end
 
         CreateUI()
-        CreateMinimapButton()
         CreateToggleButton()
 
     elseif event == "PLAYER_LOGIN" then
@@ -960,10 +1048,10 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
                 ApplyKeybind()
             end
             local bindMsg = WofiDB.keybind and (" Keybind: |cff88ff88" .. WofiDB.keybind .. "|r") or ""
-            print("|cff00ff00Wofi|r loaded. Type |cff88ff88/wofi|r or click minimap icon." .. bindMsg)
+            print("|cff00ff00Wofi|r loaded. Type |cff88ff88/wofi|r to open." .. bindMsg)
         end)
 
-    elseif event == "LEARNED_SPELL_IN_TAB" or event == "SPELLS_CHANGED" then
+    elseif event == "LEARNED_SPELL_IN_SKILL_LINE" or event == "SPELLS_CHANGED" then
         -- Rebuild spell cache when spells change
         if spellCacheBuilt then
             C_Timer.After(0.5, BuildSpellCache)
@@ -973,6 +1061,13 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         -- Rebuild item cache when bags change
         if itemCacheBuilt and WofiDB.includeItems then
             C_Timer.After(0.5, BuildItemCache)
+        end
+
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        -- Close Wofi when entering combat
+        if WofiFrame and WofiFrame:IsShown() then
+            WofiFrame:Hide()
+            print("|cff00ff00Wofi:|r |cffff6666Closed - entering combat|r")
         end
     end
 end)

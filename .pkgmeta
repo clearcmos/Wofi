@@ -1,0 +1,16 @@
+package-as: Wofi
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
+ignore:
+  - README.md
+  - CHANGELOG.md
+  - CI.md
+  - CLAUDE.md
+  - .github
+  - .gitignore
+  - .pkgmeta
+  - assets
+  - temp
