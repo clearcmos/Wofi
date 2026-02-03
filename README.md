@@ -4,6 +4,8 @@
 
 Built specifically for **TBC Classic Anniversary**.
 
+![Wofi Launcher](https://github.com/clearcmos/Wofi/blob/main/assets/image1.png?raw=true)
+
 ---
 
 ## Features
