@@ -43,8 +43,8 @@ local MAX_RECENT_PLAYERS = 50
 local playerCacheRebuildTimer = nil
 
 -- Localized API functions (avoid table lookups in hot paths)
-local GetContainerItemInfo = GetContainerItemInfo
-local GetContainerNumSlots = GetContainerNumSlots
+-- Note: C_Container functions must be called as C_Container.X() — they are not
+-- populated as globals and are not ready at file-scope load time.
 local GetTradeskillRepeatCount = _G.GetTradeskillRepeatCount
 
 -- Main frame
@@ -312,7 +312,7 @@ end
 -- ============================================================================
 
 local function IsUsableItem(bagID, slotID)
-    local info = GetContainerItemInfo(bagID, slotID)
+    local info = C_Container.GetContainerItemInfo(bagID, slotID)
     if not info or not info.itemID then return false end
 
     -- Check if item has a Use: spell effect (potions, gadgets, patterns, etc.)
@@ -334,10 +334,10 @@ local function BuildItemCache()
     -- Scan all bags (0 = backpack, 1-4 = bags)
     local seenIDs = {}  -- deduplicate stacks of the same item
     for bagID = 0, 4 do
-        local numSlots = GetContainerNumSlots(bagID)
+        local numSlots = C_Container.GetContainerNumSlots(bagID)
         for slotID = 1, numSlots do
             if IsUsableItem(bagID, slotID) then
-                local info = GetContainerItemInfo(bagID, slotID)
+                local info = C_Container.GetContainerItemInfo(bagID, slotID)
                 if info and info.itemID and not seenIDs[info.itemID] then
                     local itemName, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(info.itemID)
                     if itemName then
@@ -1380,9 +1380,9 @@ local function CreateResultButton(parent, index)
         elseif self.entry.entryType == TYPE_ITEM then
             -- Find current bag/slot for this item (may have moved since cache)
             for bagID = 0, 4 do
-                local numSlots = GetContainerNumSlots(bagID)
+                local numSlots = C_Container.GetContainerNumSlots(bagID)
                 for slotID = 1, numSlots do
-                    local info = GetContainerItemInfo(bagID, slotID)
+                    local info = C_Container.GetContainerItemInfo(bagID, slotID)
                     if info and info.itemID == self.entry.itemID then
                         C_Container.PickupContainerItem(bagID, slotID)
                         return
@@ -2475,9 +2475,9 @@ RecalcTradeskillAvailability = function()
     -- Count all items in bags
     local bagCounts = {}
     for bagID = 0, 4 do
-        local numSlots = GetContainerNumSlots(bagID)
+        local numSlots = C_Container.GetContainerNumSlots(bagID)
         for slotID = 1, numSlots do
-            local info = GetContainerItemInfo(bagID, slotID)
+            local info = C_Container.GetContainerItemInfo(bagID, slotID)
             if info and info.itemID then
                 bagCounts[info.itemID] = (bagCounts[info.itemID] or 0) + (info.stackCount or 1)
             end
@@ -2742,9 +2742,9 @@ function addon:ShowTradeskillPopup(entry)
         -- Count current bag contents
         local bagCounts = {}
         for bagID = 0, 4 do
-            local numSlots = GetContainerNumSlots(bagID)
+            local numSlots = C_Container.GetContainerNumSlots(bagID)
             for slotID = 1, numSlots do
-                local info = GetContainerItemInfo(bagID, slotID)
+                local info = C_Container.GetContainerItemInfo(bagID, slotID)
                 if info and info.itemID then
                     bagCounts[info.itemID] = (bagCounts[info.itemID] or 0) + (info.stackCount or 1)
                 end
