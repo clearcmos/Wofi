@@ -15,6 +15,9 @@ local defaults = {
     showCraftAlert = true,
     showMerchantSearch = true,
     includePlayers = true,
+    includeZones = true,
+    includeLockouts = true,
+    includeQuests = true,
     welcomeShown = false,
 }
 
@@ -24,15 +27,25 @@ local itemCache = {}
 local macroCache = {}
 local tradeskillCache = {}
 local playerCache = {}
+local zoneCache = {}
+local lockoutCache = {}
+local questCache = {}
 local spellCacheBuilt = false
 local itemCacheBuilt = false
 local macroCacheBuilt = false
 local playerCacheBuilt = false
+local zoneCacheBuilt = false
+local questCacheBuilt = false
 local recentPlayers = {}
 local recentPlayerCount = 0
 local coGuildPlayers = {}  -- session-only, populated by GreenWall message handler or comember_cache seed
 local MAX_RECENT_PLAYERS = 50
 local playerCacheRebuildTimer = nil
+
+-- Localized API functions (avoid table lookups in hot paths)
+local GetContainerItemInfo = GetContainerItemInfo
+local GetContainerNumSlots = GetContainerNumSlots
+local GetTradeskillRepeatCount = _G.GetTradeskillRepeatCount
 
 -- Main frame
 local WofiFrame
@@ -49,11 +62,19 @@ local welcomeFrame = nil
 local settingsCategoryID = nil
 
 -- Entry types
-local TYPE_SPELL = "spell"
-local TYPE_ITEM = "item"
-local TYPE_MACRO = "macro"
+local TYPE_SPELL    = "spell"
+local TYPE_ITEM     = "item"
+local TYPE_MACRO    = "macro"
 local TYPE_TRADESKILL = "tradeskill"
-local TYPE_PLAYER = "player"
+local TYPE_PLAYER   = "player"
+local TYPE_MAP      = "map"
+local TYPE_LOCKOUT  = "lockout"
+local TYPE_QUEST    = "quest"
+
+-- Questie optional integration
+local function IsQuestieAvailable()
+    return QuestieLoader ~= nil
+end
 
 -- Player source priority and display info
 local PLAYER_SOURCE_RECENT  = 1
@@ -170,7 +191,7 @@ local function StartAutoCraftClose(recipeName, qty)
         UpdateCraftAlert(qty, recipeName)
     end
     autoCraftPollTicker = C_Timer.NewTicker(0.2, function(ticker)
-        local remaining = GetTradeskillRepeatCount and GetTradeskillRepeatCount() or 0
+        local remaining = GetTradeskillRepeatCount and GetTradeskillRepeatCount() or 0  -- nil-safe: may be absent on some clients
         local casting = UnitCastingInfo("player") or UnitChannelInfo("player")
 
         if remaining == 0 then
@@ -291,7 +312,7 @@ end
 -- ============================================================================
 
 local function IsUsableItem(bagID, slotID)
-    local info = C_Container.GetContainerItemInfo(bagID, slotID)
+    local info = GetContainerItemInfo(bagID, slotID)
     if not info or not info.itemID then return false end
 
     -- Check if item has a Use: spell effect (potions, gadgets, patterns, etc.)
@@ -299,8 +320,7 @@ local function IsUsableItem(bagID, slotID)
     if itemSpell then return true end
 
     -- Check if it's a Quest item (quest starters, etc.)
-    local _, _, _, _, _, itemType = GetItemInfo(info.itemID)
-    if itemType == "Quest" then return true end
+    if select(6, GetItemInfo(info.itemID)) == "Quest" then return true end
 
     -- Check if item is flagged as readable/usable (some quest items)
     if info.isReadable then return true end
@@ -314,10 +334,10 @@ local function BuildItemCache()
     -- Scan all bags (0 = backpack, 1-4 = bags)
     local seenIDs = {}  -- deduplicate stacks of the same item
     for bagID = 0, 4 do
-        local numSlots = C_Container.GetContainerNumSlots(bagID)
+        local numSlots = GetContainerNumSlots(bagID)
         for slotID = 1, numSlots do
             if IsUsableItem(bagID, slotID) then
-                local info = C_Container.GetContainerItemInfo(bagID, slotID)
+                local info = GetContainerItemInfo(bagID, slotID)
                 if info and info.itemID and not seenIDs[info.itemID] then
                     local itemName, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(info.itemID)
                     if itemName then
@@ -483,7 +503,7 @@ BuildPlayerCache = function()
     if BNGetNumFriends and BNGetFriendInfo and BNGetGameAccountInfo then
         local numBNet = BNGetNumFriends() or 0
         for i = 1, numBNet do
-            local ok, presenceID, presenceName, battleTag, isBattleTagPresence,
+            local ok, _, _, _, _,
                   toonName, toonID, client, isOnline = pcall(BNGetFriendInfo, i)
             if ok and isOnline and toonID and client == BNET_CLIENT_WOW then
                 local ok2, _, charName, _, realmName, _, faction,
@@ -568,6 +588,125 @@ local function TrackRecentPlayer(name, class, classUpper, level, zone)
     end
 
     SchedulePlayerCacheRebuild()
+end
+
+-- ============================================================================
+-- Zone/Map Cache
+-- ============================================================================
+
+local function BuildZoneCache()
+    wipe(zoneCache)
+    if not C_Map or not C_Map.GetFallbackWorldMapID then return end
+
+    -- Walk the map tree: world root -> continents -> zones
+    local rootID = C_Map.GetFallbackWorldMapID()
+    local rootChildren = C_Map.GetMapChildrenInfo(rootID) or {}
+
+    local continentIDs = {}
+    for _, child in ipairs(rootChildren) do
+        if child.mapType == Enum.UIMapType.Continent then
+            -- direct continent under root
+            table.insert(continentIDs, { mapID = child.mapID, name = child.name })
+        elseif child.mapType == Enum.UIMapType.World then
+            -- world node between root and continents (e.g. "Azeroth")
+            local worldChildren = C_Map.GetMapChildrenInfo(child.mapID) or {}
+            for _, wchild in ipairs(worldChildren) do
+                if wchild.mapType == Enum.UIMapType.Continent then
+                    table.insert(continentIDs, { mapID = wchild.mapID, name = wchild.name })
+                end
+            end
+        end
+    end
+
+    for _, cont in ipairs(continentIDs) do
+        local zones = C_Map.GetMapChildrenInfo(cont.mapID, Enum.UIMapType.Zone, false) or {}
+        for _, zone in ipairs(zones) do
+            if zone.name and zone.name ~= "" then
+                table.insert(zoneCache, {
+                    entryType  = TYPE_MAP,
+                    name       = zone.name,
+                    nameLower  = zone.name:lower(),
+                    mapID      = zone.mapID,
+                    continent  = cont.name,
+                    texture    = "Interface\\Icons\\INV_Misc_Map_01",
+                })
+            end
+        end
+    end
+    table.sort(zoneCache, function(a, b) return a.name < b.name end)
+    zoneCacheBuilt = true
+end
+
+-- ============================================================================
+-- Lockout Cache
+-- ============================================================================
+
+local function FormatResetTime(seconds)
+    if seconds <= 0 then return "expired" end
+    local d = math.floor(seconds / 86400)
+    local h = math.floor((seconds % 86400) / 3600)
+    local m = math.floor((seconds % 3600) / 60)
+    if d > 0 then return d .. "d " .. h .. "h"
+    elseif h > 0 then return h .. "h " .. m .. "m"
+    else return m .. "m" end
+end
+
+local function BuildLockoutCache()
+    wipe(lockoutCache)
+    local numInstances = GetNumSavedInstances()
+    for i = 1, numInstances do
+        local name, id, reset, difficulty, locked, extended,
+              instanceIDMostSig, isRaid, maxPlayers, difficultyName,
+              numEncounters, progress = GetSavedInstanceInfo(i)
+        if name then
+            local texture = "Interface\\Icons\\Spell_Arcane_Blink"
+            table.insert(lockoutCache, {
+                entryType      = TYPE_LOCKOUT,
+                name           = name,
+                nameLower      = name:lower(),
+                instanceIndex  = i,
+                isRaid         = isRaid,
+                reset          = reset,
+                resetStr       = FormatResetTime(reset),
+                numEncounters  = numEncounters or 0,
+                progress       = progress or 0,
+                maxPlayers     = maxPlayers,
+                difficultyName = difficultyName,
+                texture        = texture,
+            })
+        end
+    end
+end
+
+-- ============================================================================
+-- Quest Cache
+-- ============================================================================
+
+local function BuildQuestCache()
+    wipe(questCache)
+    local numEntries = GetNumQuestLogEntries()
+    for i = 1, numEntries do
+        local title, level, questTag, isHeader, isCollapsed,
+              isComplete, frequency, questID = GetQuestLogTitle(i)
+        if title and not isHeader then
+            local _, itemTexture = GetQuestLogSpecialItemInfo(i)
+            local complete = isComplete and isComplete ~= 0
+            table.insert(questCache, {
+                entryType     = TYPE_QUEST,
+                name          = title,
+                nameLower     = title:lower(),
+                questLogIndex = i,
+                questID       = questID or 0,
+                level         = level,
+                isComplete    = complete,
+                texture       = itemTexture
+                    or (complete
+                        and "Interface\\GossipFrame\\AvailableQuestIcon"
+                        or  "Interface\\GossipFrame\\ActiveQuestIcon"),
+            })
+        end
+    end
+    questCacheBuilt = true
 end
 
 -- ============================================================================
@@ -686,6 +825,60 @@ local function Search(query)
     -- Search players (if enabled)
     if WofiDB.includePlayers and #playerCache > 0 then
         for _, entry in ipairs(playerCache) do
+            if entry.nameLower == queryLower then
+                table.insert(exactMatches, entry)
+            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
+                table.insert(startMatches, entry)
+            elseif entry.nameLower:find(queryLower, 1, true) then
+                table.insert(containsMatches, entry)
+            else
+                local score = FuzzyMatch(queryLower, entry.nameLower)
+                if score then
+                    table.insert(fuzzyMatches, { entry = entry, score = score })
+                end
+            end
+        end
+    end
+
+    -- Search zones/maps (if enabled)
+    if WofiDB.includeZones and #zoneCache > 0 then
+        for _, entry in ipairs(zoneCache) do
+            if entry.nameLower == queryLower then
+                table.insert(exactMatches, entry)
+            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
+                table.insert(startMatches, entry)
+            elseif entry.nameLower:find(queryLower, 1, true) then
+                table.insert(containsMatches, entry)
+            else
+                local score = FuzzyMatch(queryLower, entry.nameLower)
+                if score then
+                    table.insert(fuzzyMatches, { entry = entry, score = score })
+                end
+            end
+        end
+    end
+
+    -- Search instance lockouts (if enabled)
+    if WofiDB.includeLockouts and #lockoutCache > 0 then
+        for _, entry in ipairs(lockoutCache) do
+            if entry.nameLower == queryLower then
+                table.insert(exactMatches, entry)
+            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
+                table.insert(startMatches, entry)
+            elseif entry.nameLower:find(queryLower, 1, true) then
+                table.insert(containsMatches, entry)
+            else
+                local score = FuzzyMatch(queryLower, entry.nameLower)
+                if score then
+                    table.insert(fuzzyMatches, { entry = entry, score = score })
+                end
+            end
+        end
+    end
+
+    -- Search active quests (if enabled and Questie is available)
+    if WofiDB.includeQuests and IsQuestieAvailable() and #questCache > 0 then
+        for _, entry in ipairs(questCache) do
             if entry.nameLower == queryLower then
                 table.insert(exactMatches, entry)
             elseif entry.nameLower:sub(1, #queryLower) == queryLower then
@@ -949,8 +1142,8 @@ local function CreateResultButton(parent, index)
     btn:SetPoint("RIGHT", -4, 0)
     -- Left-click DOWN = cast/use spell/item (action fires immediately)
     -- Right-drag = pick up spell/item for action bar placement
-    btn:RegisterForClicks("LeftButtonDown")
-    btn:RegisterForDrag("RightButton")
+    btn:RegisterForClicks("LeftButtonUp")
+    btn:RegisterForDrag("LeftButton", "RightButton")
 
     -- Default to spell type
     btn:SetAttribute("type", "spell")
@@ -987,14 +1180,80 @@ local function CreateResultButton(parent, index)
     btn.typeText:SetPoint("RIGHT", -6, 0)
     btn.typeText:SetTextColor(0.5, 0.5, 0.5)
 
-    -- PostClick: hide frame after secure action, or show craft popup for tradeskill
+    -- PostClick: hide frame after secure action, or dispatch non-secure entry types
     btn:SetScript("PostClick", function(self)
-        if self.entry and self.entry.entryType == TYPE_TRADESKILL then
+        if not self.entry then return end
+        if self.entry.entryType == TYPE_TRADESKILL then
             addon:ShowTradeskillPopup(self.entry)
             return
         end
-        if self.entry and self.entry.entryType == TYPE_PLAYER then
+        if self.entry.entryType == TYPE_PLAYER then
             ChatFrame_SendTell(self.entry.name)
+            WofiFrame:Hide()
+            return
+        end
+        if self.entry.entryType == TYPE_MAP then
+            WofiFrame:Hide()
+            local targetMapID = self.entry.mapID
+            ShowUIPanel(WorldMapFrame)
+            -- Defer one tick so OnShow's player-zone reset doesn't override us
+            C_Timer.After(0, function()
+                if WorldMapFrame.SetMapID then
+                    WorldMapFrame:SetMapID(targetMapID)
+                end
+            end)
+            return
+        end
+        if self.entry.entryType == TYPE_LOCKOUT then
+            WofiFrame:Hide()
+            return
+        end
+        if self.entry.entryType == TYPE_QUEST then
+            WofiFrame:Hide()
+            SelectQuestLogEntry(self.entry.questLogIndex)
+            local qID = self.entry.questID
+            -- Always open the map first at the player's current zone as a baseline.
+            -- Questie will then SetMapID to the quest zone if it can find one.
+            WorldMapFrame:Show()
+            if C_Map and C_Map.GetBestMapForUnit then
+                local m = C_Map.GetBestMapForUnit("player")
+                if m then WorldMapFrame:SetMapID(m) end
+            end
+            -- Use Questie's map navigation to navigate to the quest's zone
+            if qID and qID > 0 and QuestieLoader then
+                local QuestieDB = QuestieLoader:ImportModule("QuestieDB")
+                local QuestieTrackerUtils = QuestieLoader:ImportModule("TrackerUtils")
+                if QuestieDB and QuestieTrackerUtils then
+                    local quest = QuestieDB.GetQuest(qID)
+                    if quest then
+                        if quest:IsComplete() == 1 then
+                            QuestieTrackerUtils:ShowFinisherOnMap(quest)
+                        else
+                            -- Check one level deeper: spawnList may exist but contain entries
+                            -- with nil Spawns (e.g. event/discovery NPCs with no DB coordinates).
+                            local shown = false
+                            if quest.Objectives then
+                                for _, obj in pairs(quest.Objectives) do
+                                    if obj.spawnList then
+                                        for _, spawnData in pairs(obj.spawnList) do
+                                            if spawnData.Spawns and next(spawnData.Spawns) then
+                                                QuestieTrackerUtils:ShowObjectiveOnMap(obj)
+                                                shown = true
+                                                break
+                                            end
+                                        end
+                                    end
+                                    if shown then break end
+                                end
+                            end
+                            if not shown then
+                                QuestieTrackerUtils:ShowFinisherOnMap(quest)
+                            end
+                        end
+                    end
+                end
+            end
+            return
         end
         if WofiFrame:IsShown() then
             WofiFrame:Hide()
@@ -1062,12 +1321,41 @@ local function CreateResultButton(parent, index)
                 if sourceInfo then
                     GameTooltip:AddLine(sourceInfo.tag, sourceInfo.color[1], sourceInfo.color[2], sourceInfo.color[3])
                 end
+            elseif self.entry.entryType == TYPE_MAP then
+                GameTooltip:SetText(self.entry.name, 1, 1, 1)
+                if self.entry.continent then
+                    GameTooltip:AddLine(self.entry.continent, 0.5, 0.5, 1)
+                end
+            elseif self.entry.entryType == TYPE_LOCKOUT then
+                GameTooltip:SetText(self.entry.name, 1, 1, 1)
+                local typeStr = (self.entry.isRaid and "Raid" or "Dungeon")
+                    .. (self.entry.difficultyName and self.entry.difficultyName ~= ""
+                        and " (" .. self.entry.difficultyName .. ")" or "")
+                GameTooltip:AddLine(typeStr, 0.5, 0.5, 1)
+                if self.entry.numEncounters > 0 then
+                    GameTooltip:AddLine("Bosses: " .. self.entry.progress .. "/" .. self.entry.numEncounters, 0.8, 0.8, 0.8)
+                end
+                GameTooltip:AddLine("Resets in: " .. self.entry.resetStr, 0.6, 0.6, 0.6)
+            elseif self.entry.entryType == TYPE_QUEST then
+                GameTooltip:SetText(self.entry.name, 1, 0.82, 0)
+                if self.entry.level then
+                    GameTooltip:AddLine("Level " .. self.entry.level, 0.5, 0.5, 1)
+                end
+                if self.entry.isComplete then
+                    GameTooltip:AddLine("Ready to turn in!", 0.4, 1.0, 0.4)
+                end
             end
             GameTooltip:AddLine(" ")
             if self.entry.entryType == TYPE_TRADESKILL then
                 GameTooltip:AddLine("Left-click to craft", 0.5, 0.8, 1)
             elseif self.entry.entryType == TYPE_PLAYER then
                 GameTooltip:AddLine("Left-click to whisper", 0.5, 0.8, 1)
+            elseif self.entry.entryType == TYPE_MAP then
+                GameTooltip:AddLine("Left-click to open map", 0.5, 0.8, 1)
+            elseif self.entry.entryType == TYPE_LOCKOUT then
+                GameTooltip:AddLine("Lockout info", 0.5, 0.5, 0.5)
+            elseif self.entry.entryType == TYPE_QUEST then
+                GameTooltip:AddLine("Left-click to show on map", 0.5, 0.8, 1)
             elseif self.entry.entryType == TYPE_MACRO then
                 GameTooltip:AddLine("Left-click to run, Right-drag to action bar", 0.5, 0.8, 1)
             else
@@ -1084,16 +1372,17 @@ local function CreateResultButton(parent, index)
     btn:SetScript("OnDragStart", function(self)
         if InCombatLockdown() then return end
         if not self.entry then return end
-        if self.entry.entryType == TYPE_PLAYER then return end
+        local noDrag = { [TYPE_PLAYER]=true, [TYPE_MAP]=true, [TYPE_LOCKOUT]=true, [TYPE_QUEST]=true }
+        if noDrag[self.entry.entryType] then return end
 
         if self.entry.entryType == TYPE_SPELL then
             PickupSpellBookItem(self.entry.slot, BOOKTYPE_SPELL)
         elseif self.entry.entryType == TYPE_ITEM then
             -- Find current bag/slot for this item (may have moved since cache)
             for bagID = 0, 4 do
-                local numSlots = C_Container.GetContainerNumSlots(bagID)
+                local numSlots = GetContainerNumSlots(bagID)
                 for slotID = 1, numSlots do
-                    local info = C_Container.GetContainerItemInfo(bagID, slotID)
+                    local info = GetContainerItemInfo(bagID, slotID)
                     if info and info.itemID == self.entry.itemID then
                         C_Container.PickupContainerItem(bagID, slotID)
                         return
@@ -1334,6 +1623,39 @@ function addon:UpdateResults()
                     btn.typeText:SetText("[player]")
                     btn.typeText:SetTextColor(0.5, 0.5, 0.5)
                 end
+            elseif entry.entryType == TYPE_MAP then
+                btn:SetAttribute("type", "")
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
+                btn.typeText:SetText("[map]")
+                btn.typeText:SetTextColor(0.4, 0.8, 1.0)
+            elseif entry.entryType == TYPE_LOCKOUT then
+                btn:SetAttribute("type", "")
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
+                local cleared = entry.numEncounters > 0 and entry.progress >= entry.numEncounters
+                local progressStr = cleared and "cleared"
+                    or (entry.numEncounters > 0 and entry.progress .. "/" .. entry.numEncounters or "locked")
+                btn.typeText:SetText("[" .. progressStr .. " | " .. entry.resetStr .. "]")
+                if cleared then
+                    btn.typeText:SetTextColor(0.4, 1.0, 0.4)
+                else
+                    btn.typeText:SetTextColor(1.0, 0.8, 0.3)
+                end
+            elseif entry.entryType == TYPE_QUEST then
+                btn:SetAttribute("type", "")
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
+                if entry.isComplete then
+                    btn.typeText:SetText("[turnin]")
+                    btn.typeText:SetTextColor(0.4, 1.0, 0.4)
+                else
+                    btn.typeText:SetText("[quest]")
+                    btn.typeText:SetTextColor(1.0, 0.82, 0.0)
+                end
             end
 
             btn:Show()
@@ -1484,6 +1806,45 @@ local function RegisterSettings()
     end)
     yPos = yPos - 30
 
+    -- Include Zones checkbox
+    local zonesCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    zonesCb:SetPoint("TOPLEFT", 16, yPos)
+    zonesCb.text:SetText("Include zone/map search")
+    zonesCb.text:SetFontObject(GameFontNormal)
+    zonesCb:SetScript("OnClick", function(self)
+        WofiDB.includeZones = self:GetChecked()
+        if WofiDB.includeZones and not zoneCacheBuilt then
+            BuildZoneCache()
+        end
+    end)
+    yPos = yPos - 30
+
+    -- Include Lockouts checkbox
+    local lockoutsCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    lockoutsCb:SetPoint("TOPLEFT", 16, yPos)
+    lockoutsCb.text:SetText("Include instance lockouts in search results")
+    lockoutsCb.text:SetFontObject(GameFontNormal)
+    lockoutsCb:SetScript("OnClick", function(self)
+        WofiDB.includeLockouts = self:GetChecked()
+        if WofiDB.includeLockouts then
+            BuildLockoutCache()
+        end
+    end)
+    yPos = yPos - 30
+
+    -- Include Quests checkbox (disabled when Questie is not loaded)
+    local questsCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    questsCb:SetPoint("TOPLEFT", 16, yPos)
+    questsCb.text:SetText("Include active quests in search results (requires Questie)")
+    questsCb.text:SetFontObject(GameFontNormal)
+    questsCb:SetScript("OnClick", function(self)
+        WofiDB.includeQuests = self:GetChecked()
+        if WofiDB.includeQuests and not questCacheBuilt then
+            BuildQuestCache()
+        end
+    end)
+    yPos = yPos - 30
+
     -- Show all spell ranks checkbox
     local allRanksCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
     allRanksCb:SetPoint("TOPLEFT", 16, yPos)
@@ -1602,11 +1963,19 @@ local function RegisterSettings()
     statsLabel:SetTextColor(0.6, 0.6, 0.6)
 
     local function UpdateStats()
-        local itemCount = WofiDB.includeItems and #itemCache or 0
-        local macroCount = WofiDB.includeMacros and #macroCache or 0
-        local tradeCount = #tradeskillCache
-        local playerCount = WofiDB.includePlayers and #playerCache or 0
-        statsLabel:SetText(#spellCache .. " spells, " .. itemCount .. " items, " .. macroCount .. " macros, " .. tradeCount .. " recipes, " .. playerCount .. " players")
+        local itemCount   = WofiDB.includeItems    and #itemCache    or 0
+        local macroCount  = WofiDB.includeMacros   and #macroCache   or 0
+        local tradeCount  = #tradeskillCache
+        local playerCount = WofiDB.includePlayers  and #playerCache  or 0
+        local zoneCount   = WofiDB.includeZones    and #zoneCache    or 0
+        local lockCount   = WofiDB.includeLockouts and #lockoutCache or 0
+        local questCount  = WofiDB.includeQuests   and #questCache   or 0
+        statsLabel:SetText(
+            #spellCache .. " spells, " .. itemCount .. " items, " ..
+            macroCount .. " macros, " .. tradeCount .. " recipes, " ..
+            playerCount .. " players, " .. zoneCount .. " zones, " ..
+            lockCount .. " lockouts, " .. questCount .. " quests"
+        )
     end
     yPos = yPos - 28
 
@@ -1625,6 +1994,17 @@ local function RegisterSettings()
         macrosCb:SetChecked(WofiDB.includeMacros)
         tradeskillsCb:SetChecked(WofiDB.includeTradeskills)
         playersCb:SetChecked(WofiDB.includePlayers)
+        zonesCb:SetChecked(WofiDB.includeZones)
+        lockoutsCb:SetChecked(WofiDB.includeLockouts)
+        if IsQuestieAvailable() then
+            questsCb:Enable()
+            questsCb:SetChecked(WofiDB.includeQuests)
+            questsCb.text:SetTextColor(1, 1, 1)
+        else
+            questsCb:Disable()
+            questsCb:SetChecked(false)
+            questsCb.text:SetTextColor(0.5, 0.5, 0.5)
+        end
         allRanksCb:SetChecked(WofiDB.allSpellRanks)
         maxResultsSlider:SetValue(WofiDB.maxResults or 8)
         maxResultsValue:SetText(WofiDB.maxResults or 8)
@@ -2095,9 +2475,9 @@ RecalcTradeskillAvailability = function()
     -- Count all items in bags
     local bagCounts = {}
     for bagID = 0, 4 do
-        local numSlots = C_Container.GetContainerNumSlots(bagID)
+        local numSlots = GetContainerNumSlots(bagID)
         for slotID = 1, numSlots do
-            local info = C_Container.GetContainerItemInfo(bagID, slotID)
+            local info = GetContainerItemInfo(bagID, slotID)
             if info and info.itemID then
                 bagCounts[info.itemID] = (bagCounts[info.itemID] or 0) + (info.stackCount or 1)
             end
@@ -2362,9 +2742,9 @@ function addon:ShowTradeskillPopup(entry)
         -- Count current bag contents
         local bagCounts = {}
         for bagID = 0, 4 do
-            local numSlots = C_Container.GetContainerNumSlots(bagID)
+            local numSlots = GetContainerNumSlots(bagID)
             for slotID = 1, numSlots do
-                local info = C_Container.GetContainerItemInfo(bagID, slotID)
+                local info = GetContainerItemInfo(bagID, slotID)
                 if info and info.itemID then
                     bagCounts[info.itemID] = (bagCounts[info.itemID] or 0) + (info.stackCount or 1)
                 end
@@ -2524,40 +2904,36 @@ function addon:Toggle()
             print("|cff00ff00Wofi:|r |cffff6666Must be out of combat|r")
             return
         end
-        if not spellCacheBuilt then
-            BuildSpellCache()
-        end
-        if WofiDB.includeItems and not itemCacheBuilt then
-            BuildItemCache()
-        end
-        if WofiDB.includeMacros and not macroCacheBuilt then
-            BuildMacroCache()
-        end
-        if WofiDB.includePlayers and not playerCacheBuilt then
-            BuildPlayerCache()
-        end
+        if not spellCacheBuilt then BuildSpellCache() end
+        if WofiDB.includeItems   and not itemCacheBuilt   then BuildItemCache()   end
+        if WofiDB.includeMacros  and not macroCacheBuilt  then BuildMacroCache()  end
+        if WofiDB.includePlayers and not playerCacheBuilt then BuildPlayerCache() end
+        if WofiDB.includeZones   and not zoneCacheBuilt   then BuildZoneCache()   end
+        if WofiDB.includeQuests  and not questCacheBuilt  then BuildQuestCache()  end
+        if WofiDB.includeLockouts then BuildLockoutCache() end
         WofiFrame:Show()
     end
 end
 
 function addon:RefreshCache()
     BuildSpellCache()
-    if WofiDB.includeItems then
-        BuildItemCache()
-    end
-    if WofiDB.includeMacros then
-        BuildMacroCache()
-    end
-    if #tradeskillCache > 0 then
-        RecalcTradeskillAvailability()
-    end
-    if WofiDB.includePlayers then
-        BuildPlayerCache()
-    end
-    local itemCount = WofiDB.includeItems and #itemCache or 0
-    local macroCount = WofiDB.includeMacros and #macroCache or 0
-    local playerCount = WofiDB.includePlayers and #playerCache or 0
-    print("|cff00ff00Wofi:|r Cache refreshed (" .. #spellCache .. " spells, " .. itemCount .. " items, " .. macroCount .. " macros, " .. playerCount .. " players)")
+    if WofiDB.includeItems    then BuildItemCache()    end
+    if WofiDB.includeMacros   then BuildMacroCache()   end
+    if WofiDB.includePlayers  then BuildPlayerCache()  end
+    if WofiDB.includeZones    then BuildZoneCache()    end
+    if WofiDB.includeLockouts then BuildLockoutCache() end
+    if WofiDB.includeQuests   then BuildQuestCache()   end
+    if #tradeskillCache > 0   then RecalcTradeskillAvailability() end
+    local itemCount   = WofiDB.includeItems    and #itemCache    or 0
+    local macroCount  = WofiDB.includeMacros   and #macroCache   or 0
+    local playerCount = WofiDB.includePlayers  and #playerCache  or 0
+    local zoneCount   = WofiDB.includeZones    and #zoneCache    or 0
+    local lockCount   = WofiDB.includeLockouts and #lockoutCache or 0
+    local questCount  = WofiDB.includeQuests   and #questCache   or 0
+    print("|cff00ff00Wofi:|r Cache refreshed (" ..
+        #spellCache .. " spells, " .. itemCount .. " items, " ..
+        macroCount .. " macros, " .. playerCount .. " players, " ..
+        zoneCount .. " zones, " .. lockCount .. " lockouts, " .. questCount .. " quests)")
 end
 
 -- Slash commands
@@ -2609,6 +2985,8 @@ eventFrame:RegisterEvent("CHAT_MSG_WHISPER")
 eventFrame:RegisterEvent("CHAT_MSG_WHISPER_INFORM")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
+eventFrame:RegisterEvent("UPDATE_INSTANCE_INFO")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
     if event == "ADDON_LOADED" and arg1 == addonName then
@@ -2646,6 +3024,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
             end
             tradeskillCache = WofiDB.tradeskillCache
         end
+        eventFrame:UnregisterEvent("ADDON_LOADED")
 
     elseif event == "PLAYER_LOGIN" then
         -- Build caches after login
@@ -2657,6 +3036,11 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
             if WofiDB.includeMacros then
                 BuildMacroCache()
             end
+            -- Build zone, lockout, and quest caches
+            if WofiDB.includeZones    then BuildZoneCache()    end
+            if WofiDB.includeLockouts then BuildLockoutCache() end
+            if WofiDB.includeQuests   then BuildQuestCache()   end
+
             -- Build player cache (delayed to let friend/guild data arrive)
             if WofiDB.includePlayers then
                 C_Timer.After(2, function()
@@ -2669,7 +3053,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
                     if gw and gw.ReplicateMessage then
                         local origReplicateMessage = gw.ReplicateMessage
                         gw.ReplicateMessage = function(event, message, guild_id, arglist)
-                            origReplicateMessage(event, message, guild_id, arglist)
+                            local result = origReplicateMessage(event, message, guild_id, arglist)
                             if WofiDB.includePlayers and arglist and arglist[2] then
                                 local sender = arglist[2]
                                 local shortName = sender:match("^([^%-]+)") or sender
@@ -2678,6 +3062,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
                                     SchedulePlayerCacheRebuild()
                                 end
                             end
+                            return result
                         end
                     end
                     -- Seed co-guild players from GreenWall's comember_cache
@@ -2922,6 +3307,16 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
                     end
                 end
             end
+        end
+
+    elseif event == "QUEST_LOG_UPDATE" then
+        if questCacheBuilt and WofiDB.includeQuests then
+            BuildQuestCache()
+        end
+
+    elseif event == "UPDATE_INSTANCE_INFO" then
+        if WofiDB.includeLockouts then
+            BuildLockoutCache()
         end
     end
 end)
