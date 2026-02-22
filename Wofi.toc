@@ -2,7 +2,7 @@
 ## Title: Wofi
 ## Notes: Spotlight/Rofi-style spell & item launcher - WoW + Rofi = Wofi
 ## Author: clearcmos
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariables: WofiDB
 
 Wofi.lua

@@ -8,14 +8,23 @@ local addonName, addon = ...
 local defaults = {
     keybind = nil,
     includeItems = true,
+    includeMacros = true,
+    includeTradeskills = true,
+    allSpellRanks = false,
+    maxResults = 8,
+    showCraftAlert = true,
+    showMerchantSearch = true,
+    welcomeShown = false,
 }
 
 -- Caches
 local spellCache = {}
 local itemCache = {}
+local macroCache = {}
 local tradeskillCache = {}
 local spellCacheBuilt = false
 local itemCacheBuilt = false
+local macroCacheBuilt = false
 
 -- Main frame
 local WofiFrame
@@ -24,15 +33,16 @@ local resultsFrame
 local resultButtons = {}
 local selectedIndex = 1
 local currentResults = {}
-local MAX_RESULTS = 8
+local MAX_RESULTS = 12
 local initializing = false
 
--- Config frame
-local configFrame = nil
+-- Settings category ID for native options panel
+local settingsCategoryID = nil
 
 -- Entry types
 local TYPE_SPELL = "spell"
 local TYPE_ITEM = "item"
+local TYPE_MACRO = "macro"
 local TYPE_TRADESKILL = "tradeskill"
 
 -- Tradeskill state (declared early for scoping)
@@ -94,6 +104,7 @@ craftAlertFrame:SetScript("OnUpdate", function(self)
 end)
 
 local function UpdateCraftAlert(remaining, recipeName)
+    if not WofiDB.showCraftAlert then return end
     craftAlertText:SetText(recipeName .. ": " .. remaining .. " remaining")
     craftAlertCrafting = true
     if not craftAlertFrame:IsShown() then
@@ -104,6 +115,7 @@ local function UpdateCraftAlert(remaining, recipeName)
 end
 
 local function CompleteCraftAlert(recipeName)
+    if not WofiDB.showCraftAlert then return end
     craftAlertText:SetText(recipeName .. " complete!")
     craftAlertCrafting = false
     craftAlertStartTime = GetTime()
@@ -213,6 +225,9 @@ local SKILL_COLORS = {
 local function BuildSpellCache()
     wipe(spellCache)
 
+    -- Sync CVar with our setting so spellbook exposes all ranks (or not)
+    SetCVar("ShowAllSpellRanks", WofiDB.allSpellRanks and 1 or 0)
+
     local numTabs = GetNumSpellTabs()
     for tabIndex = 1, numTabs do
         local _, texture, offset, numSlots = GetSpellTabInfo(tabIndex)
@@ -237,8 +252,13 @@ local function BuildSpellCache()
         end
     end
 
-    -- Sort alphabetically
-    table.sort(spellCache, function(a, b) return a.name < b.name end)
+    -- Sort alphabetically, then by rank descending (highest first) for same-name spells
+    table.sort(spellCache, function(a, b)
+        if a.name == b.name then
+            return a.slot > b.slot -- higher slot = higher rank
+        end
+        return a.name < b.name
+    end)
     spellCacheBuilt = true
 end
 
@@ -305,6 +325,54 @@ local function BuildItemCache()
     -- Sort alphabetically
     table.sort(itemCache, function(a, b) return a.name < b.name end)
     itemCacheBuilt = true
+end
+
+-- ============================================================================
+-- Macro Cache
+-- ============================================================================
+
+local MAX_ACCOUNT_MACROS = 120
+local MAX_CHARACTER_MACROS = 18
+
+local function BuildMacroCache()
+    wipe(macroCache)
+
+    local numAccount, numCharacter = GetNumMacros()
+
+    -- Scan account-wide macros (indices 1..numAccount)
+    for i = 1, numAccount do
+        local name, iconTexture, body = GetMacroInfo(i)
+        if name and name ~= "" then
+            table.insert(macroCache, {
+                entryType = TYPE_MACRO,
+                name = name,
+                macroIndex = i,
+                texture = iconTexture,
+                body = body or "",
+                nameLower = name:lower(),
+            })
+        end
+    end
+
+    -- Scan character-specific macros (indices MAX_ACCOUNT_MACROS+1..MAX_ACCOUNT_MACROS+numCharacter)
+    for i = 1, numCharacter do
+        local idx = MAX_ACCOUNT_MACROS + i
+        local name, iconTexture, body = GetMacroInfo(idx)
+        if name and name ~= "" then
+            table.insert(macroCache, {
+                entryType = TYPE_MACRO,
+                name = name,
+                macroIndex = idx,
+                texture = iconTexture,
+                body = body or "",
+                nameLower = name:lower(),
+            })
+        end
+    end
+
+    -- Sort alphabetically
+    table.sort(macroCache, function(a, b) return a.name < b.name end)
+    macroCacheBuilt = true
 end
 
 -- ============================================================================
@@ -384,8 +452,26 @@ local function Search(query)
         end
     end
 
-    -- Search tradeskill recipes (if any are cached)
-    if #tradeskillCache > 0 then
+    -- Search macros (if enabled)
+    if WofiDB.includeMacros then
+        for _, entry in ipairs(macroCache) do
+            if entry.nameLower == queryLower then
+                table.insert(exactMatches, entry)
+            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
+                table.insert(startMatches, entry)
+            elseif entry.nameLower:find(queryLower, 1, true) then
+                table.insert(containsMatches, entry)
+            else
+                local score = FuzzyMatch(queryLower, entry.nameLower)
+                if score then
+                    table.insert(fuzzyMatches, { entry = entry, score = score })
+                end
+            end
+        end
+    end
+
+    -- Search tradeskill recipes (if enabled and any are cached)
+    if WofiDB.includeTradeskills and #tradeskillCache > 0 then
         for _, entry in ipairs(tradeskillCache) do
             if entry.nameLower == queryLower then
                 table.insert(exactMatches, entry)
@@ -406,17 +492,18 @@ local function Search(query)
     table.sort(fuzzyMatches, function(a, b) return a.score < b.score end)
 
     -- Priority: exact > starts with > contains > fuzzy
+    local maxResults = WofiDB.maxResults or 8
     for _, entry in ipairs(exactMatches) do
-        if #results < MAX_RESULTS then table.insert(results, entry) end
+        if #results < maxResults then table.insert(results, entry) end
     end
     for _, entry in ipairs(startMatches) do
-        if #results < MAX_RESULTS then table.insert(results, entry) end
+        if #results < maxResults then table.insert(results, entry) end
     end
     for _, entry in ipairs(containsMatches) do
-        if #results < MAX_RESULTS then table.insert(results, entry) end
+        if #results < maxResults then table.insert(results, entry) end
     end
     for _, match in ipairs(fuzzyMatches) do
-        if #results < MAX_RESULTS then table.insert(results, match.entry) end
+        if #results < maxResults then table.insert(results, match.entry) end
     end
 
     return results
@@ -496,17 +583,18 @@ local function SearchMerchant(query)
 
     table.sort(fuzzyMatches, function(a, b) return a.score < b.score end)
 
+    local maxResults = WofiDB.maxResults or 8
     for _, entry in ipairs(exactMatches) do
-        if #results < MAX_RESULTS then table.insert(results, entry) end
+        if #results < maxResults then table.insert(results, entry) end
     end
     for _, entry in ipairs(startMatches) do
-        if #results < MAX_RESULTS then table.insert(results, entry) end
+        if #results < maxResults then table.insert(results, entry) end
     end
     for _, entry in ipairs(containsMatches) do
-        if #results < MAX_RESULTS then table.insert(results, entry) end
+        if #results < maxResults then table.insert(results, entry) end
     end
     for _, match in ipairs(fuzzyMatches) do
-        if #results < MAX_RESULTS then table.insert(results, match.entry) end
+        if #results < maxResults then table.insert(results, match.entry) end
     end
 
     return results
@@ -699,6 +787,21 @@ local function CreateResultButton(parent, index)
                 GameTooltip:SetSpellBookItem(self.entry.slot, BOOKTYPE_SPELL)
             elseif self.entry.entryType == TYPE_ITEM then
                 GameTooltip:SetItemByID(self.entry.itemID)
+            elseif self.entry.entryType == TYPE_MACRO then
+                GameTooltip:SetText(self.entry.name, 1, 1, 1)
+                if self.entry.body and self.entry.body ~= "" then
+                    -- Show first few lines of macro body
+                    local lines = 0
+                    for line in self.entry.body:gmatch("[^\n]+") do
+                        if lines < 5 then
+                            GameTooltip:AddLine(line, 0.7, 0.7, 0.7)
+                            lines = lines + 1
+                        end
+                    end
+                    if lines == 0 then
+                        GameTooltip:AddLine("(empty macro)", 0.5, 0.5, 0.5)
+                    end
+                end
             elseif self.entry.entryType == TYPE_TRADESKILL then
                 -- Build tooltip from cached data (SetTradeSkillItem only works with window open)
                 GameTooltip:SetText(self.entry.name, 1, 1, 1)
@@ -719,6 +822,8 @@ local function CreateResultButton(parent, index)
             GameTooltip:AddLine(" ")
             if self.entry.entryType == TYPE_TRADESKILL then
                 GameTooltip:AddLine("Left-click to craft", 0.5, 0.8, 1)
+            elseif self.entry.entryType == TYPE_MACRO then
+                GameTooltip:AddLine("Left-click to run, Right-drag to action bar", 0.5, 0.8, 1)
             else
                 GameTooltip:AddLine("Left-click to use, Right-drag to action bar", 0.5, 0.8, 1)
             end
@@ -748,6 +853,8 @@ local function CreateResultButton(parent, index)
                     end
                 end
             end
+        elseif self.entry.entryType == TYPE_MACRO then
+            PickupMacro(self.entry.macroIndex)
         end
     end)
 
@@ -863,6 +970,9 @@ local function CreateUI()
         if WofiDB.includeItems and not itemCacheBuilt then
             BuildItemCache()
         end
+        if WofiDB.includeMacros and not macroCacheBuilt then
+            BuildMacroCache()
+        end
         searchBox:SetText("")
         currentResults = {}
         selectedIndex = 1
@@ -900,6 +1010,7 @@ function addon:UpdateResults()
             resultButtons[i]:SetAttribute("type", "spell")
             resultButtons[i]:SetAttribute("spell", "")
             resultButtons[i]:SetAttribute("item", nil)
+            resultButtons[i]:SetAttribute("macro", nil)
             resultButtons[i]:Hide()
         end
         return
@@ -920,6 +1031,7 @@ function addon:UpdateResults()
                 btn:SetAttribute("type", "spell")
                 btn:SetAttribute("spell", entry.name)
                 btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
                 -- Show spell rank if available
                 if entry.subName and entry.subName ~= "" then
                     btn.typeText:SetText(entry.subName)
@@ -931,8 +1043,16 @@ function addon:UpdateResults()
                 btn:SetAttribute("type", "item")
                 btn:SetAttribute("item", entry.name)
                 btn:SetAttribute("spell", nil)
+                btn:SetAttribute("macro", nil)
                 btn.typeText:SetText("[item]")
                 btn.typeText:SetTextColor(0.5, 0.5, 0.5)
+            elseif entry.entryType == TYPE_MACRO then
+                btn:SetAttribute("type", "macro")
+                btn:SetAttribute("macro", entry.macroIndex)
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn.typeText:SetText("[macro]")
+                btn.typeText:SetTextColor(0.6, 0.8, 1.0)
             elseif entry.entryType == TYPE_TRADESKILL then
                 btn:SetAttribute("type", "")
                 btn:SetAttribute("spell", nil)
@@ -969,166 +1089,275 @@ function addon:UpdateSelection()
 end
 
 -- ============================================================================
--- Config GUI
+-- Welcome Screen (first-run only)
 -- ============================================================================
 
-local function CreateCheckbox(parent, label, y, getter, setter)
-    local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-    cb:SetPoint("TOPLEFT", 20, y)
-    cb.text:SetText(label)
-    cb.text:SetFontObject(GameFontNormal)
-    cb:SetChecked(getter())
-    cb:SetScript("OnClick", function(self)
-        setter(self:GetChecked())
+local function ShowWelcome()
+    -- Don't show if already dismissed or keybind is set
+    if WofiDB.welcomeShown or WofiDB.keybind then return end
+
+    local frame = CreateFrame("Frame", "WofiWelcomeFrame", UIParent)
+    frame:SetSize(340, 160)
+    frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
+    ApplyGlowBorder(frame, 1)
+
+    -- Title
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOP", 0, -16)
+    title:SetText("|cff00ff00Wofi|r")
+
+    -- Body text
+    local body = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    body:SetPoint("TOP", title, "BOTTOM", 0, -12)
+    body:SetWidth(300)
+    body:SetJustifyH("CENTER")
+    body:SetText("Welcome! Set a keybind in options to open the search launcher with a single keypress.")
+
+    -- Open Options button
+    local optionsBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    optionsBtn:SetSize(140, 26)
+    optionsBtn:SetPoint("TOP", body, "BOTTOM", 0, -16)
+    optionsBtn:SetText("Open Options")
+    optionsBtn:SetScript("OnClick", function()
+        frame:Hide()
+        addon:ShowConfig()
     end)
-    return cb
-end
 
-local function CreateConfigFrame()
-    if configFrame then return end
-
-    configFrame = CreateFrame("Frame", "WofiConfigFrame", UIParent)
-    configFrame:SetSize(300, 250)
-    configFrame:SetPoint("CENTER")
-    configFrame:SetFrameStrata("DIALOG")
-    configFrame:SetMovable(true)
-    configFrame:EnableMouse(true)
-    configFrame:SetClampedToScreen(true)
-    configFrame:Hide()
-
-    -- Quartz-style border
-    ApplyGlowBorder(configFrame, 1)
-
-    -- Title bar
-    local titleBar = CreateFrame("Frame", nil, configFrame)
-    titleBar:SetHeight(28)
-    titleBar:SetPoint("TOPLEFT", 1, -1)
-    titleBar:SetPoint("TOPRIGHT", -1, -1)
-
-    local titleBg = titleBar:CreateTexture(nil, "BACKGROUND")
-    titleBg:SetAllPoints()
-    titleBg:SetTexture(BAR_TEXTURE)
-    titleBg:SetVertexColor(0.15, 0.15, 0.18, 1)
-    titleBar:EnableMouse(true)
-    titleBar:RegisterForDrag("LeftButton")
-    titleBar:SetScript("OnDragStart", function() configFrame:StartMoving() end)
-    titleBar:SetScript("OnDragStop", function() configFrame:StopMovingOrSizing() end)
-
-    -- Title text
-    local title = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("LEFT", 12, 0)
-    title:SetText("Wofi Options")
-    title:SetTextColor(1, 1, 1)
+    -- Don't show again checkbox
+    local neverCb = CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate")
+    neverCb:SetPoint("BOTTOMLEFT", 16, 12)
+    neverCb.text:SetText("Don't show again")
+    neverCb.text:SetFontObject(GameFontNormalSmall)
+    neverCb:SetScript("OnClick", function(self)
+        WofiDB.welcomeShown = self:GetChecked()
+    end)
 
     -- Close button
-    local closeBtn = CreateFrame("Button", nil, titleBar)
-    closeBtn:SetSize(20, 20)
-    closeBtn:SetPoint("RIGHT", -6, 0)
-    closeBtn:SetNormalTexture("Interface\\Buttons\\UI-StopButton")
-    closeBtn:SetHighlightTexture("Interface\\Buttons\\UI-StopButton", "ADD")
-    closeBtn:SetScript("OnClick", function() configFrame:Hide() end)
-
-    -- Options
-    local yPos = -50
-
-    -- Include Items checkbox
-    local itemsCb = CreateCheckbox(configFrame, "Include inventory items in search", yPos,
-        function() return WofiDB.includeItems end,
-        function(val)
-            WofiDB.includeItems = val
-            if val and not itemCacheBuilt then
-                BuildItemCache()
-            end
-        end)
-    yPos = yPos - 40
-
-    -- Keybind section
-    local keybindLabel = configFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    keybindLabel:SetPoint("TOPLEFT", 20, yPos)
-    keybindLabel:SetText("Keybind:")
-    keybindLabel:SetTextColor(1, 0.82, 0)
-
-    local keybindValue = configFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    keybindValue:SetPoint("LEFT", keybindLabel, "RIGHT", 8, 0)
-    configFrame.keybindValue = keybindValue
-
-    local function UpdateKeybindDisplay()
-        if WofiDB.keybind then
-            keybindValue:SetText(WofiDB.keybind)
-            keybindValue:SetTextColor(0.5, 1, 0.5)
-        else
-            keybindValue:SetText("Not set")
-            keybindValue:SetTextColor(0.5, 0.5, 0.5)
+    local closeBtn = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    closeBtn:SetPoint("TOPRIGHT", -2, -2)
+    closeBtn:SetScript("OnClick", function()
+        if neverCb:GetChecked() then
+            WofiDB.welcomeShown = true
         end
-    end
-    UpdateKeybindDisplay()
-    configFrame.UpdateKeybindDisplay = UpdateKeybindDisplay
+        frame:Hide()
+    end)
 
+    frame:Show()
+end
+
+-- ============================================================================
+-- Native Settings Panel (ESC > Options > AddOns > Wofi)
+-- ============================================================================
+
+local function RegisterSettings()
+    -- Canvas frame for the options panel
+    local canvas = CreateFrame("Frame", "WofiSettingsCanvas", UIParent)
+    canvas:Hide()
+
+    local yPos = -16
+
+    -- Section: Search
+    local searchHeader = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    searchHeader:SetPoint("TOPLEFT", 16, yPos)
+    searchHeader:SetText("Search")
+    searchHeader:SetTextColor(1, 0.82, 0)
     yPos = yPos - 30
 
-    -- Set Keybind button
-    local setBindBtn = CreateFrame("Button", nil, configFrame, "UIPanelButtonTemplate")
-    setBindBtn:SetSize(100, 24)
-    setBindBtn:SetPoint("TOPLEFT", 20, yPos)
-    setBindBtn:SetText("Set Keybind")
-    setBindBtn:SetScript("OnClick", function()
-        configFrame:Hide()
+    -- Include Items checkbox
+    local itemsCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    itemsCb:SetPoint("TOPLEFT", 16, yPos)
+    itemsCb.text:SetText("Include inventory items in search results")
+    itemsCb.text:SetFontObject(GameFontNormal)
+    itemsCb:SetScript("OnClick", function(self)
+        WofiDB.includeItems = self:GetChecked()
+        if WofiDB.includeItems and not itemCacheBuilt then
+            BuildItemCache()
+        end
+    end)
+    yPos = yPos - 30
+
+    -- Include Macros checkbox
+    local macrosCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    macrosCb:SetPoint("TOPLEFT", 16, yPos)
+    macrosCb.text:SetText("Include macros in search results")
+    macrosCb.text:SetFontObject(GameFontNormal)
+    macrosCb:SetScript("OnClick", function(self)
+        WofiDB.includeMacros = self:GetChecked()
+        if WofiDB.includeMacros and not macroCacheBuilt then
+            BuildMacroCache()
+        end
+    end)
+    yPos = yPos - 30
+
+    -- Include Tradeskills checkbox
+    local tradeskillsCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    tradeskillsCb:SetPoint("TOPLEFT", 16, yPos)
+    tradeskillsCb.text:SetText("Include tradeskill recipes in search results")
+    tradeskillsCb.text:SetFontObject(GameFontNormal)
+    tradeskillsCb:SetScript("OnClick", function(self)
+        WofiDB.includeTradeskills = self:GetChecked()
+    end)
+    yPos = yPos - 30
+
+    -- Show all spell ranks checkbox
+    local allRanksCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    allRanksCb:SetPoint("TOPLEFT", 16, yPos)
+    allRanksCb.text:SetText("Show all spell ranks")
+    allRanksCb.text:SetFontObject(GameFontNormal)
+    allRanksCb:SetScript("OnClick", function(self)
+        WofiDB.allSpellRanks = self:GetChecked()
+        BuildSpellCache()
+    end)
+    yPos = yPos - 40
+
+    -- Section: Display
+    local displayHeader = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    displayHeader:SetPoint("TOPLEFT", 16, yPos)
+    displayHeader:SetText("Display")
+    displayHeader:SetTextColor(1, 0.82, 0)
+    yPos = yPos - 30
+
+    -- Max results slider
+    local maxResultsLabel = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    maxResultsLabel:SetPoint("TOPLEFT", 16, yPos)
+    maxResultsLabel:SetText("Maximum search results")
+    yPos = yPos - 22
+
+    local maxResultsSlider = CreateFrame("Slider", "WofiMaxResultsSlider", canvas, "OptionsSliderTemplate")
+    maxResultsSlider:SetPoint("TOPLEFT", 20, yPos)
+    maxResultsSlider:SetSize(200, 17)
+    maxResultsSlider:SetMinMaxValues(4, 12)
+    maxResultsSlider:SetValueStep(1)
+    maxResultsSlider:SetObeyStepOnDrag(true)
+    maxResultsSlider.Low:SetText("4")
+    maxResultsSlider.High:SetText("12")
+
+    local maxResultsValue = canvas:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    maxResultsValue:SetPoint("LEFT", maxResultsSlider, "RIGHT", 12, 0)
+
+    maxResultsSlider:SetScript("OnValueChanged", function(self, value)
+        value = math.floor(value + 0.5)
+        WofiDB.maxResults = value
+        maxResultsValue:SetText(value)
+    end)
+    yPos = yPos - 34
+
+    -- Show craft alert checkbox
+    local craftAlertCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    craftAlertCb:SetPoint("TOPLEFT", 16, yPos)
+    craftAlertCb.text:SetText("Show craft progress notification")
+    craftAlertCb.text:SetFontObject(GameFontNormal)
+    craftAlertCb:SetScript("OnClick", function(self)
+        WofiDB.showCraftAlert = self:GetChecked()
+    end)
+    yPos = yPos - 30
+
+    -- Show merchant search checkbox
+    local merchantSearchCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    merchantSearchCb:SetPoint("TOPLEFT", 16, yPos)
+    merchantSearchCb.text:SetText("Show search bar on merchant windows")
+    merchantSearchCb.text:SetFontObject(GameFontNormal)
+    merchantSearchCb:SetScript("OnClick", function(self)
+        WofiDB.showMerchantSearch = self:GetChecked()
+    end)
+    yPos = yPos - 40
+
+    -- Section: Keybind
+    local keybindHeader = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    keybindHeader:SetPoint("TOPLEFT", 16, yPos)
+    keybindHeader:SetText("Keybind")
+    keybindHeader:SetTextColor(1, 0.82, 0)
+    yPos = yPos - 26
+
+    local keybindLabel = canvas:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    keybindLabel:SetPoint("TOPLEFT", 16, yPos)
+
+    local function UpdateKeybindLabel()
+        if WofiDB.keybind then
+            keybindLabel:SetText("Current: |cff80ff80" .. WofiDB.keybind .. "|r")
+        else
+            keybindLabel:SetText("Current: |cff808080Not set|r")
+        end
+    end
+    addon.UpdateKeybindLabel = UpdateKeybindLabel
+    yPos = yPos - 28
+
+    local setBtn = CreateFrame("Button", nil, canvas, "UIPanelButtonTemplate")
+    setBtn:SetSize(100, 22)
+    setBtn:SetPoint("TOPLEFT", 16, yPos)
+    setBtn:SetText("Set Keybind")
+    setBtn:SetScript("OnClick", function()
         addon:ShowBindListener()
     end)
 
-    -- Clear Keybind button
-    local clearBindBtn = CreateFrame("Button", nil, configFrame, "UIPanelButtonTemplate")
-    clearBindBtn:SetSize(100, 24)
-    clearBindBtn:SetPoint("LEFT", setBindBtn, "RIGHT", 10, 0)
-    clearBindBtn:SetText("Clear")
-    clearBindBtn:SetScript("OnClick", function()
+    local clearBtn = CreateFrame("Button", nil, canvas, "UIPanelButtonTemplate")
+    clearBtn:SetSize(80, 22)
+    clearBtn:SetPoint("LEFT", setBtn, "RIGHT", 8, 0)
+    clearBtn:SetText("Clear")
+    clearBtn:SetScript("OnClick", function()
         if WofiDB.keybind then
             SetBinding(WofiDB.keybind, nil)
             SaveBindings(GetCurrentBindingSet())
             WofiDB.keybind = nil
-            UpdateKeybindDisplay()
+            UpdateKeybindLabel()
             print("|cff00ff00Wofi:|r Keybind cleared")
         end
     end)
-
     yPos = yPos - 40
 
-    -- Refresh cache button
-    local refreshBtn = CreateFrame("Button", nil, configFrame, "UIPanelButtonTemplate")
-    refreshBtn:SetSize(140, 24)
-    refreshBtn:SetPoint("TOPLEFT", 20, yPos)
-    refreshBtn:SetText("Refresh Cache")
-    refreshBtn:SetScript("OnClick", function()
-        addon:RefreshCache()
-    end)
+    -- Section: Cache
+    local cacheHeader = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    cacheHeader:SetPoint("TOPLEFT", 16, yPos)
+    cacheHeader:SetText("Cache")
+    cacheHeader:SetTextColor(1, 0.82, 0)
+    yPos = yPos - 26
 
-    yPos = yPos - 40
-
-    -- Stats
-    local statsLabel = configFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    statsLabel:SetPoint("TOPLEFT", 20, yPos)
+    local statsLabel = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    statsLabel:SetPoint("TOPLEFT", 16, yPos)
     statsLabel:SetTextColor(0.6, 0.6, 0.6)
-    configFrame.statsLabel = statsLabel
 
     local function UpdateStats()
         local itemCount = WofiDB.includeItems and #itemCache or 0
-        statsLabel:SetText("Cached: " .. #spellCache .. " spells, " .. itemCount .. " items")
+        local macroCount = WofiDB.includeMacros and #macroCache or 0
+        local tradeCount = #tradeskillCache
+        statsLabel:SetText(#spellCache .. " spells, " .. itemCount .. " items, " .. macroCount .. " macros, " .. tradeCount .. " recipes")
     end
-    configFrame.UpdateStats = UpdateStats
+    yPos = yPos - 28
 
-    configFrame:SetScript("OnShow", function()
-        itemsCb:SetChecked(WofiDB.includeItems)
-        UpdateKeybindDisplay()
+    local refreshBtn = CreateFrame("Button", nil, canvas, "UIPanelButtonTemplate")
+    refreshBtn:SetSize(120, 22)
+    refreshBtn:SetPoint("TOPLEFT", 16, yPos)
+    refreshBtn:SetText("Refresh Cache")
+    refreshBtn:SetScript("OnClick", function()
+        addon:RefreshCache()
         UpdateStats()
     end)
 
-    -- ESC to close
-    tinsert(UISpecialFrames, "WofiConfigFrame")
+    -- OnRefresh: called when the settings panel shows this category
+    canvas.OnRefresh = function()
+        itemsCb:SetChecked(WofiDB.includeItems)
+        macrosCb:SetChecked(WofiDB.includeMacros)
+        tradeskillsCb:SetChecked(WofiDB.includeTradeskills)
+        allRanksCb:SetChecked(WofiDB.allSpellRanks)
+        maxResultsSlider:SetValue(WofiDB.maxResults or 8)
+        maxResultsValue:SetText(WofiDB.maxResults or 8)
+        craftAlertCb:SetChecked(WofiDB.showCraftAlert)
+        merchantSearchCb:SetChecked(WofiDB.showMerchantSearch)
+        UpdateKeybindLabel()
+        UpdateStats()
+    end
+
+    -- Register as canvas layout category
+    local category = Settings.RegisterCanvasLayoutCategory(canvas, "Wofi")
+    Settings.RegisterAddOnCategory(category)
+    settingsCategoryID = category:GetID()
 end
 
 function addon:ShowConfig()
-    CreateConfigFrame()
-    configFrame:Show()
+    if settingsCategoryID then
+        Settings.OpenToCategory(settingsCategoryID)
+    end
 end
 
 -- ============================================================================
@@ -1923,7 +2152,7 @@ local function CreateToggleButton()
     -- Create a button that toggles Wofi when clicked (only on key UP to avoid double-fire)
     toggleButton = CreateFrame("Button", "WofiToggleButton", UIParent, "SecureActionButtonTemplate")
     toggleButton:SetAttribute("type", "macro")
-    toggleButton:SetAttribute("macrotext", "/wofi")
+    toggleButton:SetAttribute("macrotext", "/wofi run")
     toggleButton:RegisterForClicks("AnyDown")
     toggleButton:Hide()
 end
@@ -1991,12 +2220,8 @@ local function SetupKeybindListener()
         SaveBindings(GetCurrentBindingSet())
 
         self:Hide()
+        if addon.UpdateKeybindLabel then addon.UpdateKeybindLabel() end
         print("|cff00ff00Wofi:|r Bound to |cff88ff88" .. keyStr .. "|r")
-
-        -- Update config display if open
-        if configFrame and configFrame:IsShown() then
-            configFrame.UpdateKeybindDisplay()
-        end
     end)
 end
 
@@ -2020,6 +2245,9 @@ function Wofi_Toggle()
         if WofiDB.includeItems and not itemCacheBuilt then
             BuildItemCache()
         end
+        if WofiDB.includeMacros and not macroCacheBuilt then
+            BuildMacroCache()
+        end
         WofiFrame:Show()
     end
 end
@@ -2042,6 +2270,9 @@ function addon:Toggle()
         if WofiDB.includeItems and not itemCacheBuilt then
             BuildItemCache()
         end
+        if WofiDB.includeMacros and not macroCacheBuilt then
+            BuildMacroCache()
+        end
         WofiFrame:Show()
     end
 end
@@ -2051,13 +2282,15 @@ function addon:RefreshCache()
     if WofiDB.includeItems then
         BuildItemCache()
     end
-    local itemCount = WofiDB.includeItems and #itemCache or 0
-    print("|cff00ff00Wofi:|r Cache refreshed (" .. #spellCache .. " spells, " .. itemCount .. " items)")
-
-    -- Update config display if open
-    if configFrame and configFrame:IsShown() then
-        configFrame.UpdateStats()
+    if WofiDB.includeMacros then
+        BuildMacroCache()
     end
+    if #tradeskillCache > 0 then
+        RecalcTradeskillAvailability()
+    end
+    local itemCount = WofiDB.includeItems and #itemCache or 0
+    local macroCount = WofiDB.includeMacros and #macroCache or 0
+    print("|cff00ff00Wofi:|r Cache refreshed (" .. #spellCache .. " spells, " .. itemCount .. " items, " .. macroCount .. " macros)")
 end
 
 -- Slash commands
@@ -2065,44 +2298,20 @@ SLASH_WOFI1 = "/wofi"
 SlashCmdList["WOFI"] = function(msg)
     msg = msg:lower():trim()
 
-    if msg == "config" or msg == "options" or msg == "settings" then
-        addon:ShowConfig()
-    elseif msg == "refresh" then
-        addon:RefreshCache()
-    elseif msg == "items" then
-        WofiDB.includeItems = not WofiDB.includeItems
-        if WofiDB.includeItems then
-            BuildItemCache()
-            print("|cff00ff00Wofi:|r Items enabled (" .. #itemCache .. " usable items found)")
-        else
-            print("|cff00ff00Wofi:|r Items disabled")
-        end
-    elseif msg == "bind" then
-        addon:ShowBindListener()
-    elseif msg == "unbind" then
-        if WofiDB.keybind then
-            SetBinding(WofiDB.keybind, nil)
-            SaveBindings(GetCurrentBindingSet())
-            print("|cff00ff00Wofi:|r Unbound from |cff88ff88" .. WofiDB.keybind .. "|r")
-            WofiDB.keybind = nil
-        else
-            print("|cff00ff00Wofi:|r No keybind set")
-        end
-    elseif msg == "help" then
+    if msg == "help" then
         print("|cff00ff00Wofi Commands:|r")
-        print("  /wofi - Toggle launcher")
-        print("  /wofi config - Open options")
-        print("  /wofi bind - Set a keybind")
-        print("  /wofi unbind - Remove keybind")
-        print("  /wofi items - Toggle item search (" .. (WofiDB.includeItems and "ON" or "OFF") .. ")")
+        print("  /wofi - Open launcher")
+        print("  /wofi config - Open options (aliases: options, settings)")
         print("  /wofi refresh - Refresh cache")
         print("  /wofi help - Show this help")
         print("")
-        print("|cff00ff00Usage:|r Type to search, Up/Down to select, Enter/Left-click to use")
+        print("|cff00ff00Usage:|r Set a keybind in options, then type to search")
+        print("|cff00ff00       |r Up/Down to select, Enter/Left-click to use")
         print("|cff00ff00       |r Right-drag to place on action bar")
-        if WofiDB.keybind then
-            print("|cff00ff00Current keybind:|r " .. WofiDB.keybind)
-        end
+    elseif msg == "config" or msg == "options" or msg == "settings" then
+        addon:ShowConfig()
+    elseif msg == "refresh" then
+        addon:RefreshCache()
     else
         addon:Toggle()
     end
@@ -2122,6 +2331,7 @@ eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eventFrame:RegisterEvent("MERCHANT_SHOW")
 eventFrame:RegisterEvent("MERCHANT_UPDATE")
 eventFrame:RegisterEvent("MERCHANT_CLOSED")
+eventFrame:RegisterEvent("UPDATE_MACROS")
 eventFrame:RegisterEvent("TRADE_SKILL_SHOW")
 eventFrame:RegisterEvent("TRADE_SKILL_UPDATE")
 eventFrame:RegisterEvent("TRADE_SKILL_CLOSE")
@@ -2140,6 +2350,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 
         CreateUI()
         CreateToggleButton()
+        RegisterSettings()
 
         -- Restore tradeskill cache from saved variables
         if WofiDB.tradeskillCache and #WofiDB.tradeskillCache > 0 then
@@ -2169,13 +2380,28 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
             if WofiDB.includeItems then
                 BuildItemCache()
             end
-            -- Apply saved keybind
+            if WofiDB.includeMacros then
+                BuildMacroCache()
+            end
+            -- Apply or clear keybind
             if WofiDB.keybind then
                 ApplyKeybind()
+            else
+                -- Clear any orphaned WoW binding to the toggle button
+                local key = GetBindingKey("CLICK WofiToggleButton:LeftButton")
+                if key then
+                    SetBinding(key, nil)
+                    SaveBindings(GetCurrentBindingSet())
+                end
             end
             local bindMsg = WofiDB.keybind and (" Keybind: |cff88ff88" .. WofiDB.keybind .. "|r") or ""
             local tradeMsg = #tradeskillCache > 0 and (", " .. #tradeskillCache .. " recipes cached") or ""
             print("|cff00ff00Wofi|r loaded. Type |cff88ff88/wofi|r to open." .. bindMsg .. tradeMsg)
+
+            -- Show welcome screen on first run
+            if not WofiDB.welcomeShown then
+                ShowWelcome()
+            end
 
             -- Recalculate tradeskill availability from current bag contents
             if #tradeskillCache > 0 then
@@ -2207,6 +2433,12 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
             end
         end)
 
+    elseif event == "UPDATE_MACROS" then
+        -- Rebuild macro cache when macros are created, edited, or deleted
+        if macroCacheBuilt and WofiDB.includeMacros then
+            BuildMacroCache()
+        end
+
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- Close Wofi when entering combat
         if WofiFrame and WofiFrame:IsShown() then
@@ -2223,17 +2455,19 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         end
 
     elseif event == "MERCHANT_SHOW" then
-        CreateMerchantSearchUI()
-        BuildMerchantCache()
-        if merchantSearchBox then
-            merchantSearchBox:SetText("")
+        if WofiDB.showMerchantSearch then
+            CreateMerchantSearchUI()
+            BuildMerchantCache()
+            if merchantSearchBox then
+                merchantSearchBox:SetText("")
+            end
+            merchantCurrentResults = {}
+            merchantSelectedIndex = 1
+            if merchantSearchFrame then
+                merchantSearchFrame:Show()
+            end
+            addon:UpdateMerchantResults()
         end
-        merchantCurrentResults = {}
-        merchantSelectedIndex = 1
-        if merchantSearchFrame then
-            merchantSearchFrame:Show()
-        end
-        addon:UpdateMerchantResults()
 
     elseif event == "MERCHANT_UPDATE" then
         -- Debounce rebuilds
