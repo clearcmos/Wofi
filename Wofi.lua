@@ -1140,9 +1140,10 @@ local function CreateResultButton(parent, index)
     btn:SetHeight(28)
     btn:SetPoint("LEFT", 4, 0)
     btn:SetPoint("RIGHT", -4, 0)
-    -- Left-click DOWN = cast/use spell/item (action fires immediately)
-    -- Right-drag = pick up spell/item for action bar placement
-    btn:RegisterForClicks("LeftButtonUp")
+    -- Mirrors Blizzard's action button pattern:
+    -- AnyUp fires secure action on click-release; LeftButtonDown needed for Enter override binding.
+    -- Drag (OnDragStart) suppresses the click because you release over a different frame.
+    btn:RegisterForClicks("AnyUp", "LeftButtonDown")
     btn:RegisterForDrag("LeftButton", "RightButton")
 
     -- Default to spell type
