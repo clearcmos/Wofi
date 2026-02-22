@@ -40,6 +40,7 @@ local tradeskillWindowOpen = false
 local pendingCraft = nil  -- {recipeName, qty} for auto-craft when profession opens
 local autoCraftHiding = false  -- true while TradeSkillFrame should be invisible
 local autoCraftPollTicker = nil
+local RecalcTradeskillAvailability  -- forward declaration (defined later in file)
 
 -- Standalone frame that enforces TradeSkillFrame invisibility every rendered frame
 local tradeskillHider = CreateFrame("Frame")
@@ -49,34 +50,136 @@ tradeskillHider:SetScript("OnUpdate", function()
     end
 end)
 
+-- Craft progress alert (RepSync-style center-screen fade)
+local craftAlertFrame = CreateFrame("Frame", "WofiCraftAlertFrame", UIParent)
+craftAlertFrame:SetSize(512, 40)
+craftAlertFrame:SetPoint("TOP", UIParent, "TOP", 0, -220)
+craftAlertFrame:SetFrameStrata("HIGH")
+craftAlertFrame:Hide()
+
+local craftAlertText = craftAlertFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+craftAlertText:SetPoint("CENTER")
+craftAlertText:SetFont(craftAlertText:GetFont(), 26, "THICKOUTLINE")
+craftAlertText:SetTextColor(0.5, 1.0, 0.5)
+
+local craftAlertCrafting = false  -- true while actively crafting (hold alpha=1)
+local craftAlertStartTime = 0
+local CRAFT_ALERT_FADE_IN  = 0.5
+local CRAFT_ALERT_HOLD     = 1.5
+local CRAFT_ALERT_FADE_OUT = 2.0
+
+craftAlertFrame:SetScript("OnUpdate", function(self)
+    if craftAlertCrafting then
+        -- During crafting: fade in then hold at full alpha
+        local elapsed = GetTime() - craftAlertStartTime
+        if elapsed < CRAFT_ALERT_FADE_IN then
+            self:SetAlpha(elapsed / CRAFT_ALERT_FADE_IN)
+        else
+            self:SetAlpha(1.0)
+        end
+    else
+        -- After crafting: fade in, hold, fade out
+        local elapsed = GetTime() - craftAlertStartTime
+        if elapsed < CRAFT_ALERT_FADE_IN then
+            self:SetAlpha(elapsed / CRAFT_ALERT_FADE_IN)
+        elseif elapsed < CRAFT_ALERT_FADE_IN + CRAFT_ALERT_HOLD then
+            self:SetAlpha(1.0)
+        elseif elapsed < CRAFT_ALERT_FADE_IN + CRAFT_ALERT_HOLD + CRAFT_ALERT_FADE_OUT then
+            local fadeElapsed = elapsed - CRAFT_ALERT_FADE_IN - CRAFT_ALERT_HOLD
+            self:SetAlpha(1.0 - fadeElapsed / CRAFT_ALERT_FADE_OUT)
+        else
+            self:Hide()
+        end
+    end
+end)
+
+local function UpdateCraftAlert(remaining, recipeName)
+    craftAlertText:SetText(recipeName .. ": " .. remaining .. " remaining")
+    craftAlertCrafting = true
+    if not craftAlertFrame:IsShown() then
+        craftAlertStartTime = GetTime()
+        craftAlertFrame:SetAlpha(0)
+        craftAlertFrame:Show()
+    end
+end
+
+local function CompleteCraftAlert(recipeName)
+    craftAlertText:SetText(recipeName .. " complete!")
+    craftAlertCrafting = false
+    craftAlertStartTime = GetTime()
+    craftAlertFrame:SetAlpha(0)
+    craftAlertFrame:Show()
+end
+
+local function DismissCraftAlert()
+    -- Silently fade out whatever is currently showing (skip to fade-out phase)
+    craftAlertCrafting = false
+    craftAlertStartTime = GetTime() - CRAFT_ALERT_FADE_IN - CRAFT_ALERT_HOLD
+end
+
 -- Close the hidden tradeskill window after all queued crafts finish
 -- Uses GetTradeskillRepeatCount() to know when the queue is empty,
--- then waits for the final cast to finish before closing
-local function StartAutoCraftClose()
+-- then waits for the final cast to finish before closing.
+-- Cancel detection: moving interrupts the cast but GetTradeskillRepeatCount()
+-- may stay non-zero, so we also detect "not casting for 1s" as cancelled.
+local function StartAutoCraftClose(recipeName, qty)
     if autoCraftPollTicker then
         autoCraftPollTicker:Cancel()
+    end
+    local showAlert = qty and qty > 1
+    local lastDisplayed = qty or 0
+    local notCastingSince = nil  -- when we first saw no active cast
+    local sawRemainingZero = false  -- true if remaining hit 0 (queue fully consumed)
+    if showAlert then
+        UpdateCraftAlert(qty, recipeName)
     end
     autoCraftPollTicker = C_Timer.NewTicker(0.2, function(ticker)
         local remaining = GetTradeskillRepeatCount and GetTradeskillRepeatCount() or 0
         local casting = UnitCastingInfo("player") or UnitChannelInfo("player")
 
-        -- Only close when no crafts remain AND no cast in progress
-        if remaining == 0 and not casting then
-            C_Timer.After(0.3, function()
-                autoCraftHiding = false
-                if TradeSkillFrame then
-                    TradeSkillFrame:SetAlpha(1)
-                end
-                CloseTradeSkill()
-                -- Recalculate availability from actual bag contents
-                -- (handles both completed crafts and canceled crafts correctly)
-                RecalcTradeskillAvailability()
-            end)
+        if remaining == 0 then
+            sawRemainingZero = true
+        end
+
+        -- Update alert when remaining count decreases AND still casting
+        -- (casting confirms a craft completed and the next one started;
+        -- without this guard, a cancel drops remaining before the cast clears)
+        if showAlert and remaining > 0 and remaining < lastDisplayed and casting then
+            lastDisplayed = remaining
+            UpdateCraftAlert(remaining, recipeName)
+        end
+
+        -- Track how long we've been idle (not casting)
+        if casting then
+            notCastingSince = nil
+        elseif not notCastingSince then
+            notCastingSince = GetTime()
+        end
+
+        -- Close when not casting for 1s (covers both completion and cancel)
+        -- Normal completion: remaining hit 0 at some point → "complete!"
+        -- Cancel (move/esc): remaining never hit 0 → silent fade
+        if notCastingSince and (GetTime() - notCastingSince) >= 1.0 then
+            -- Cancel ticker FIRST so errors in cleanup can't leave it running
             ticker:Cancel()
             autoCraftPollTicker = nil
+            if showAlert then
+                if sawRemainingZero then
+                    CompleteCraftAlert(recipeName)
+                else
+                    DismissCraftAlert()
+                end
+            end
+            autoCraftHiding = false
+            if TradeSkillFrame then
+                TradeSkillFrame:SetAlpha(1)
+            end
+            CloseTradeSkill()
+            RecalcTradeskillAvailability()
         end
     end)
 end
+
 -- Auto-scan state
 local autoScanQueue = {}
 local autoScanActive = false
@@ -1476,7 +1579,7 @@ end
 
 -- Recalculate numAvailable for all cached recipes based on current bag contents
 -- Called on BAG_UPDATE_DELAYED so crafting counts stay accurate without opening professions
-local function RecalcTradeskillAvailability()
+RecalcTradeskillAvailability = function()
     if #tradeskillCache == 0 then return end
 
     -- Count all items in bags
@@ -1671,7 +1774,7 @@ local function CreateTradeskillQuantityPopup()
             SelectTradeSkill(entry.index)
             DoTradeSkill(entry.index, qty)
             print("|cff00ff00Wofi:|r Crafting " .. qty .. "x " .. entry.name)
-            StartAutoCraftClose()
+            StartAutoCraftClose(entry.name, qty)
         else
             -- Window closed: macro will open it, store pending craft for TRADE_SKILL_SHOW
             pendingCraft = { recipeName = entry.name, qty = qty }
@@ -1732,6 +1835,7 @@ function addon:ShowTradeskillPopup(entry)
     tradeskillQuantityPopup.icon:SetTexture(entry.texture)
     tradeskillQuantityPopup.nameText:SetText(entry.name)
     tradeskillQuantityPopup.qtyBox:SetText("1")
+    tradeskillQuantityPopup.createBtn:SetButtonState("NORMAL")
 
     -- Use alt verb if available (e.g., "Disenchant", "Prospect")
     if entry.altVerb then
@@ -2198,7 +2302,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
                     print("|cff00ff00Wofi:|r Could not find recipe: " .. craft.recipeName)
                 end
 
-                StartAutoCraftClose()
+                StartAutoCraftClose(craft.recipeName, craft.qty)
             end
         end
 
