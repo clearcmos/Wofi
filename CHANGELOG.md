@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.2.0
+
+### Added
+- **Player search** - Search and whisper friends, BNet friends, guild members, and recently interacted players
+  - Online WoW friends with `[friend]` indicator in green
+  - BNet friends on same server with `[bnet]` indicator in blue
+  - Online guild members with `[guild]` indicator in green
+  - Recently interacted players (whispers, targets, group members) with `[recent]` indicator
+  - Class icons from the class atlas texture with per-class tex coords
+  - Tooltip shows class-colored name, level, zone, and source
+  - Click or Enter to open whisper to that player
+  - Debounced cache rebuilds on friend/guild/BNet events
+  - Session-only recent player tracking (max 50 entries)
+  - Toggle via config GUI checkbox
+
 ## v1.1.0
 
 ### Added

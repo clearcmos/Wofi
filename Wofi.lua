@@ -14,6 +14,7 @@ local defaults = {
     maxResults = 8,
     showCraftAlert = true,
     showMerchantSearch = true,
+    includePlayers = true,
     welcomeShown = false,
 }
 
@@ -22,9 +23,16 @@ local spellCache = {}
 local itemCache = {}
 local macroCache = {}
 local tradeskillCache = {}
+local playerCache = {}
 local spellCacheBuilt = false
 local itemCacheBuilt = false
 local macroCacheBuilt = false
+local playerCacheBuilt = false
+local recentPlayers = {}
+local recentPlayerCount = 0
+local coGuildPlayers = {}  -- session-only, populated by GreenWall message handler or comember_cache seed
+local MAX_RECENT_PLAYERS = 50
+local playerCacheRebuildTimer = nil
 
 -- Main frame
 local WofiFrame
@@ -35,6 +43,7 @@ local selectedIndex = 1
 local currentResults = {}
 local MAX_RESULTS = 12
 local initializing = false
+local welcomeFrame = nil
 
 -- Settings category ID for native options panel
 local settingsCategoryID = nil
@@ -44,6 +53,21 @@ local TYPE_SPELL = "spell"
 local TYPE_ITEM = "item"
 local TYPE_MACRO = "macro"
 local TYPE_TRADESKILL = "tradeskill"
+local TYPE_PLAYER = "player"
+
+-- Player source priority and display info
+local PLAYER_SOURCE_RECENT  = 1
+local PLAYER_SOURCE_COGUILD = 2
+local PLAYER_SOURCE_GUILD   = 3
+local PLAYER_SOURCE_BNET    = 4
+local PLAYER_SOURCE_FRIEND  = 5
+local PLAYER_SOURCE_INFO = {
+    [1] = { tag = "[recent]",  color = {0.8, 0.8, 0.5} },
+    [2] = { tag = "[coguild]", color = {0.4, 0.85, 0.4} },
+    [3] = { tag = "[guild]",   color = {0.25, 1.0, 0.25} },
+    [4] = { tag = "[bnet]",    color = {0.0, 0.8, 1.0} },
+    [5] = { tag = "[friend]",  color = {0.0, 1.0, 0.5} },
+}
 
 -- Tradeskill state (declared early for scoping)
 local tradeskillWindowOpen = false
@@ -288,34 +312,25 @@ local function BuildItemCache()
     wipe(itemCache)
 
     -- Scan all bags (0 = backpack, 1-4 = bags)
+    local seenIDs = {}  -- deduplicate stacks of the same item
     for bagID = 0, 4 do
         local numSlots = C_Container.GetContainerNumSlots(bagID)
         for slotID = 1, numSlots do
             if IsUsableItem(bagID, slotID) then
                 local info = C_Container.GetContainerItemInfo(bagID, slotID)
-                if info and info.itemID then
+                if info and info.itemID and not seenIDs[info.itemID] then
                     local itemName, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(info.itemID)
                     if itemName then
-                        -- Check if we already have this item (avoid duplicates for stacks)
-                        local found = false
-                        for _, cached in ipairs(itemCache) do
-                            if cached.itemID == info.itemID then
-                                found = true
-                                break
-                            end
-                        end
-
-                        if not found then
-                            table.insert(itemCache, {
-                                entryType = TYPE_ITEM,
-                                name = itemName,
-                                itemID = info.itemID,
-                                bagID = bagID,
-                                slotID = slotID,
-                                texture = itemTexture or info.iconFileID,
-                                nameLower = itemName:lower(),
-                            })
-                        end
+                        seenIDs[info.itemID] = true
+                        table.insert(itemCache, {
+                            entryType = TYPE_ITEM,
+                            name = itemName,
+                            itemID = info.itemID,
+                            bagID = bagID,
+                            slotID = slotID,
+                            texture = itemTexture or info.iconFileID,
+                            nameLower = itemName:lower(),
+                        })
                     end
                 end
             end
@@ -373,6 +388,186 @@ local function BuildMacroCache()
     -- Sort alphabetically
     table.sort(macroCache, function(a, b) return a.name < b.name end)
     macroCacheBuilt = true
+end
+
+-- ============================================================================
+-- Player Cache
+-- ============================================================================
+
+local BuildPlayerCache  -- forward declaration
+
+local function SchedulePlayerCacheRebuild()
+    if playerCacheRebuildTimer then
+        playerCacheRebuildTimer:Cancel()
+    end
+    playerCacheRebuildTimer = C_Timer.NewTimer(1, function()
+        playerCacheRebuildTimer = nil
+        if WofiDB and WofiDB.includePlayers then
+            if playerCacheBuilt then
+                BuildPlayerCache()
+            end
+        end
+    end)
+end
+
+-- Seed coGuildPlayers from GreenWall's comember_cache (recently seen co-guild members)
+local function SeedCoGuildFromCache()
+    if not gw or not gw.config or not gw.config.comember_cache then return end
+    local cache = gw.config.comember_cache.cache
+    if not cache then return end
+    for name, _ in pairs(cache) do
+        local shortName = name:match("^([^%-]+)") or name
+        if shortName ~= UnitName("player") and not coGuildPlayers[shortName] then
+            coGuildPlayers[shortName] = { timestamp = GetTime() }
+        end
+    end
+end
+
+BuildPlayerCache = function()
+    wipe(playerCache)
+    local seen = {}  -- name -> { entry, sourcePriority }
+
+    local function AddPlayer(name, source, class, classUpper, level, zone)
+        if not name or name == "" then return end
+        local existing = seen[name]
+        if existing then
+            if source > existing.sourcePriority then
+                existing.entry.source = source
+                existing.entry.class = class or existing.entry.class
+                existing.entry.classUpper = classUpper or existing.entry.classUpper
+                existing.entry.level = level or existing.entry.level
+                existing.entry.zone = zone or existing.entry.zone
+                existing.sourcePriority = source
+            end
+            return
+        end
+
+        local texture
+        if classUpper and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[classUpper] then
+            texture = "Interface\\GLUES\\CHARACTERCREATE\\UI-CharacterCreate-Classes"
+        else
+            texture = "Interface\\FriendsFrame\\UI-Toast-FriendOnlineIcon"
+        end
+
+        local entry = {
+            entryType = TYPE_PLAYER,
+            name = name,
+            nameLower = name:lower(),
+            texture = texture,
+            source = source,
+            class = class,
+            classUpper = classUpper,
+            level = level,
+            zone = zone,
+        }
+        table.insert(playerCache, entry)
+        seen[name] = { entry = entry, sourcePriority = source }
+    end
+
+    local myRealm = GetRealmName()
+
+    -- 1) WoW friends list
+    if C_FriendList then
+        local numFriends = C_FriendList.GetNumFriends()
+        for i = 1, numFriends do
+            local info = C_FriendList.GetFriendInfoByIndex(i)
+            if info and info.connected then
+                -- className is localized display name, need file name for RAID_CLASS_COLORS
+                local classFile = info.className and info.className:upper():gsub(" ", "") or nil
+                AddPlayer(info.name, PLAYER_SOURCE_FRIEND, info.className, classFile, info.level, info.area)
+            end
+        end
+    end
+
+    -- 2) BNet friends (same faction, online in WoW)
+    if BNGetNumFriends and BNGetFriendInfo and BNGetGameAccountInfo then
+        local numBNet = BNGetNumFriends() or 0
+        for i = 1, numBNet do
+            local ok, presenceID, presenceName, battleTag, isBattleTagPresence,
+                  toonName, toonID, client, isOnline = pcall(BNGetFriendInfo, i)
+            if ok and isOnline and toonID and client == BNET_CLIENT_WOW then
+                local ok2, _, charName, _, realmName, _, faction,
+                      _, class, _, zoneName, level = pcall(BNGetGameAccountInfo, toonID)
+                if ok2 and charName and charName ~= "" then
+                    local classFile = class and class:upper():gsub(" ", "") or nil
+                    local displayName = charName
+                    if realmName and realmName ~= "" and realmName ~= myRealm then
+                        displayName = charName .. "-" .. realmName
+                    end
+                    AddPlayer(displayName, PLAYER_SOURCE_BNET, class, classFile, level, zoneName)
+                end
+            end
+        end
+    end
+
+    -- 3) Guild members (online only)
+    if IsInGuild() then
+        if C_GuildInfo and C_GuildInfo.GuildRoster then
+            C_GuildInfo.GuildRoster()
+        elseif GuildRoster then
+            GuildRoster()
+        end
+        local numGuild = GetNumGuildMembers()
+        for i = 1, numGuild do
+            local fullName, _, _, level, _, zone, _, _, isOnline, _, classFile = GetGuildRosterInfo(i)
+            if fullName and isOnline then
+                -- Strip realm suffix if same realm
+                local shortName = fullName:match("^([^%-]+)")
+                local classDisplay = classFile and (classFile:sub(1,1) .. classFile:sub(2):lower()) or nil
+                AddPlayer(shortName, PLAYER_SOURCE_GUILD, classDisplay, classFile, level, zone)
+            end
+        end
+    end
+
+    -- 4) GreenWall co-guild members (optional dependency, populated by message handler)
+    for name, data in pairs(coGuildPlayers) do
+        AddPlayer(name, PLAYER_SOURCE_COGUILD, data.class, data.classUpper, data.level, data.zone)
+    end
+
+    -- 5) Recent interactions (session-only)
+    for name, data in pairs(recentPlayers) do
+        AddPlayer(name, PLAYER_SOURCE_RECENT, data.class, data.classUpper, data.level, data.zone)
+    end
+
+    table.sort(playerCache, function(a, b) return a.name < b.name end)
+    playerCacheBuilt = true
+end
+
+local function TrackRecentPlayer(name, class, classUpper, level, zone)
+    if not name or name == "" then return end
+    -- Skip self
+    local myName = UnitName("player")
+    if name == myName then return end
+    -- Strip realm if same realm
+    local shortName = name:match("^([^%-]+)") or name
+
+    if not recentPlayers[shortName] then
+        recentPlayerCount = recentPlayerCount + 1
+    end
+    recentPlayers[shortName] = {
+        timestamp = GetTime(),
+        class = class,
+        classUpper = classUpper,
+        level = level,
+        zone = zone,
+    }
+
+    -- Trim to MAX_RECENT_PLAYERS (evict oldest)
+    if recentPlayerCount > MAX_RECENT_PLAYERS then
+        local oldestName, oldestTime = nil, math.huge
+        for n, data in pairs(recentPlayers) do
+            if data.timestamp < oldestTime then
+                oldestName = n
+                oldestTime = data.timestamp
+            end
+        end
+        if oldestName then
+            recentPlayers[oldestName] = nil
+            recentPlayerCount = recentPlayerCount - 1
+        end
+    end
+
+    SchedulePlayerCacheRebuild()
 end
 
 -- ============================================================================
@@ -473,6 +668,24 @@ local function Search(query)
     -- Search tradeskill recipes (if enabled and any are cached)
     if WofiDB.includeTradeskills and #tradeskillCache > 0 then
         for _, entry in ipairs(tradeskillCache) do
+            if entry.nameLower == queryLower then
+                table.insert(exactMatches, entry)
+            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
+                table.insert(startMatches, entry)
+            elseif entry.nameLower:find(queryLower, 1, true) then
+                table.insert(containsMatches, entry)
+            else
+                local score = FuzzyMatch(queryLower, entry.nameLower)
+                if score then
+                    table.insert(fuzzyMatches, { entry = entry, score = score })
+                end
+            end
+        end
+    end
+
+    -- Search players (if enabled)
+    if WofiDB.includePlayers and #playerCache > 0 then
+        for _, entry in ipairs(playerCache) do
             if entry.nameLower == queryLower then
                 table.insert(exactMatches, entry)
             elseif entry.nameLower:sub(1, #queryLower) == queryLower then
@@ -684,6 +897,8 @@ end
 
 -- Fade animation state
 local fadeAnimations = {}
+local animationFrame   -- forward declaration; defined below after UpdateFadeAnimations
+local UpdateFadeAnimations  -- forward declaration
 
 local function StartFadeIn(frame, duration)
     duration = duration or 0.15
@@ -694,10 +909,12 @@ local function StartFadeIn(frame, duration)
         endAlpha = 1,
     }
     frame:SetAlpha(0)
+    -- Re-enable OnUpdate only while animations are active
+    animationFrame:SetScript("OnUpdate", UpdateFadeAnimations)
     -- Don't call Show() here - OnShow triggers this, frame is already showing
 end
 
-local function UpdateFadeAnimations(self, elapsed)
+UpdateFadeAnimations = function(self, elapsed)
     for frame, anim in pairs(fadeAnimations) do
         anim.elapsed = anim.elapsed + elapsed
         local progress = math.min(anim.elapsed / anim.duration, 1)
@@ -711,11 +928,14 @@ local function UpdateFadeAnimations(self, elapsed)
             frame:SetAlpha(anim.endAlpha)
         end
     end
+    -- Disable OnUpdate when no animations remain (saves CPU between fades)
+    if not next(fadeAnimations) then
+        self:SetScript("OnUpdate", nil)
+    end
 end
 
--- Animation frame (created once)
-local animationFrame = CreateFrame("Frame")
-animationFrame:SetScript("OnUpdate", UpdateFadeAnimations)
+-- Animation frame (created once; OnUpdate is enabled only while animations are active)
+animationFrame = CreateFrame("Frame")
 
 -- ============================================================================
 -- UI Creation
@@ -773,6 +993,9 @@ local function CreateResultButton(parent, index)
             addon:ShowTradeskillPopup(self.entry)
             return
         end
+        if self.entry and self.entry.entryType == TYPE_PLAYER then
+            ChatFrame_SendTell(self.entry.name)
+        end
         if WofiFrame:IsShown() then
             WofiFrame:Hide()
         end
@@ -814,14 +1037,37 @@ local function CreateResultButton(parent, index)
                         GameTooltip:AddLine("  " .. rName .. " x" .. reagent.count, 0.8, 0.8, 0.8)
                     end
                 end
-                if self.entry.numAvailable > 0 then
+                if (self.entry.numAvailable or 0) > 0 then
                     GameTooltip:AddLine(" ")
                     GameTooltip:AddLine("Can craft: " .. self.entry.numAvailable, 0.5, 1, 0.5)
+                end
+            elseif self.entry.entryType == TYPE_PLAYER then
+                local r, g, b = 1, 1, 1
+                if self.entry.classUpper and RAID_CLASS_COLORS and RAID_CLASS_COLORS[self.entry.classUpper] then
+                    local cc = RAID_CLASS_COLORS[self.entry.classUpper]
+                    r, g, b = cc.r, cc.g, cc.b
+                end
+                GameTooltip:SetText(self.entry.name, r, g, b)
+                if self.entry.class and self.entry.level then
+                    GameTooltip:AddLine("Level " .. self.entry.level .. " " .. self.entry.class, 0.8, 0.8, 0.8)
+                elseif self.entry.class then
+                    GameTooltip:AddLine(self.entry.class, 0.8, 0.8, 0.8)
+                elseif self.entry.level then
+                    GameTooltip:AddLine("Level " .. self.entry.level, 0.8, 0.8, 0.8)
+                end
+                if self.entry.zone and self.entry.zone ~= "" then
+                    GameTooltip:AddLine(self.entry.zone, 0.6, 0.6, 0.6)
+                end
+                local sourceInfo = PLAYER_SOURCE_INFO[self.entry.source]
+                if sourceInfo then
+                    GameTooltip:AddLine(sourceInfo.tag, sourceInfo.color[1], sourceInfo.color[2], sourceInfo.color[3])
                 end
             end
             GameTooltip:AddLine(" ")
             if self.entry.entryType == TYPE_TRADESKILL then
                 GameTooltip:AddLine("Left-click to craft", 0.5, 0.8, 1)
+            elseif self.entry.entryType == TYPE_PLAYER then
+                GameTooltip:AddLine("Left-click to whisper", 0.5, 0.8, 1)
             elseif self.entry.entryType == TYPE_MACRO then
                 GameTooltip:AddLine("Left-click to run, Right-drag to action bar", 0.5, 0.8, 1)
             else
@@ -838,6 +1084,7 @@ local function CreateResultButton(parent, index)
     btn:SetScript("OnDragStart", function(self)
         if InCombatLockdown() then return end
         if not self.entry then return end
+        if self.entry.entryType == TYPE_PLAYER then return end
 
         if self.entry.entryType == TYPE_SPELL then
             PickupSpellBookItem(self.entry.slot, BOOKTYPE_SPELL)
@@ -973,6 +1220,9 @@ local function CreateUI()
         if WofiDB.includeMacros and not macroCacheBuilt then
             BuildMacroCache()
         end
+        if WofiDB.includePlayers and not playerCacheBuilt then
+            BuildPlayerCache()
+        end
         searchBox:SetText("")
         currentResults = {}
         selectedIndex = 1
@@ -1024,6 +1274,7 @@ function addon:UpdateResults()
         if entry then
             btn.entry = entry
             btn.icon:SetTexture(entry.texture)
+            btn.icon:SetTexCoord(0, 1, 0, 1)  -- Reset tex coords (player entries override)
             btn.text:SetText(entry.name)
             btn.selected:SetShown(i == selectedIndex)
 
@@ -1065,6 +1316,24 @@ function addon:UpdateResults()
                     btn.typeText:SetText("[craft: 0]")
                     btn.typeText:SetTextColor(0.5, 0.5, 0.5)
                 end
+            elseif entry.entryType == TYPE_PLAYER then
+                btn:SetAttribute("type", "")
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
+                -- Class icon tex coords
+                if entry.classUpper and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[entry.classUpper] then
+                    local coords = CLASS_ICON_TCOORDS[entry.classUpper]
+                    btn.icon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+                end
+                local sourceInfo = PLAYER_SOURCE_INFO[entry.source]
+                if sourceInfo then
+                    btn.typeText:SetText(sourceInfo.tag)
+                    btn.typeText:SetTextColor(sourceInfo.color[1], sourceInfo.color[2], sourceInfo.color[3])
+                else
+                    btn.typeText:SetText("[player]")
+                    btn.typeText:SetTextColor(0.5, 0.5, 0.5)
+                end
             end
 
             btn:Show()
@@ -1095,8 +1364,10 @@ end
 local function ShowWelcome()
     -- Don't show if already dismissed or keybind is set
     if WofiDB.welcomeShown or WofiDB.keybind then return end
+    if welcomeFrame then welcomeFrame:Show(); return end
 
-    local frame = CreateFrame("Frame", "WofiWelcomeFrame", UIParent)
+    welcomeFrame = CreateFrame("Frame", "WofiWelcomeFrame", UIParent)
+    local frame = welcomeFrame
     frame:SetSize(340, 160)
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("DIALOG")
@@ -1197,6 +1468,19 @@ local function RegisterSettings()
     tradeskillsCb.text:SetFontObject(GameFontNormal)
     tradeskillsCb:SetScript("OnClick", function(self)
         WofiDB.includeTradeskills = self:GetChecked()
+    end)
+    yPos = yPos - 30
+
+    -- Include Players checkbox
+    local playersCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
+    playersCb:SetPoint("TOPLEFT", 16, yPos)
+    playersCb.text:SetText("Include online players in search results")
+    playersCb.text:SetFontObject(GameFontNormal)
+    playersCb:SetScript("OnClick", function(self)
+        WofiDB.includePlayers = self:GetChecked()
+        if WofiDB.includePlayers and not playerCacheBuilt then
+            BuildPlayerCache()
+        end
     end)
     yPos = yPos - 30
 
@@ -1321,7 +1605,8 @@ local function RegisterSettings()
         local itemCount = WofiDB.includeItems and #itemCache or 0
         local macroCount = WofiDB.includeMacros and #macroCache or 0
         local tradeCount = #tradeskillCache
-        statsLabel:SetText(#spellCache .. " spells, " .. itemCount .. " items, " .. macroCount .. " macros, " .. tradeCount .. " recipes")
+        local playerCount = WofiDB.includePlayers and #playerCache or 0
+        statsLabel:SetText(#spellCache .. " spells, " .. itemCount .. " items, " .. macroCount .. " macros, " .. tradeCount .. " recipes, " .. playerCount .. " players")
     end
     yPos = yPos - 28
 
@@ -1339,6 +1624,7 @@ local function RegisterSettings()
         itemsCb:SetChecked(WofiDB.includeItems)
         macrosCb:SetChecked(WofiDB.includeMacros)
         tradeskillsCb:SetChecked(WofiDB.includeTradeskills)
+        playersCb:SetChecked(WofiDB.includePlayers)
         allRanksCb:SetChecked(WofiDB.allSpellRanks)
         maxResultsSlider:SetValue(WofiDB.maxResults or 8)
         maxResultsValue:SetText(WofiDB.maxResults or 8)
@@ -1747,15 +2033,10 @@ local function BuildTradeskillCache()
     if not profName or profName == "" or profName == "UNKNOWN" then return end
 
     -- Remove only entries for THIS profession, keep all others
-    local kept = {}
-    for _, entry in ipairs(tradeskillCache) do
-        if entry.professionName ~= profName then
-            table.insert(kept, entry)
+    for i = #tradeskillCache, 1, -1 do
+        if tradeskillCache[i].professionName == profName then
+            table.remove(tradeskillCache, i)
         end
-    end
-    wipe(tradeskillCache)
-    for _, entry in ipairs(kept) do
-        table.insert(tradeskillCache, entry)
     end
 
     -- Expand all categories to index every recipe
@@ -1871,7 +2152,8 @@ local function StartProfessionScan()
     end
 
     -- Expand all collapsed skill headers so secondary professions are visible
-    for i = GetNumSkillLines(), 1, -1 do
+    local numSkillLines = GetNumSkillLines()
+    for i = numSkillLines, 1, -1 do
         local _, isHeader, isExpanded = GetSkillLineInfo(i)
         if isHeader and not isExpanded then
             ExpandSkillHeader(i)
@@ -1880,7 +2162,7 @@ local function StartProfessionScan()
 
     -- Discover player's crafting professions via skill lines
     autoScanQueue = {}
-    for i = 1, GetNumSkillLines() do
+    for i = 1, numSkillLines do
         local name, isHeader = GetSkillLineInfo(i)
         if not isHeader and CRAFTING_PROFESSIONS[name] then
             table.insert(autoScanQueue, CRAFTING_PROFESSIONS[name])
@@ -2230,28 +2512,6 @@ function addon:ShowBindListener()
     bindingListener:Show()
 end
 
--- Global function called by keybind
-function Wofi_Toggle()
-    if WofiFrame and WofiFrame:IsShown() then
-        WofiFrame:Hide()
-    elseif WofiFrame then
-        if InCombatLockdown() then
-            print("|cff00ff00Wofi:|r |cffff6666Must be out of combat|r")
-            return
-        end
-        if not spellCacheBuilt then
-            BuildSpellCache()
-        end
-        if WofiDB.includeItems and not itemCacheBuilt then
-            BuildItemCache()
-        end
-        if WofiDB.includeMacros and not macroCacheBuilt then
-            BuildMacroCache()
-        end
-        WofiFrame:Show()
-    end
-end
-
 -- ============================================================================
 -- Toggle and Slash Commands
 -- ============================================================================
@@ -2273,6 +2533,9 @@ function addon:Toggle()
         if WofiDB.includeMacros and not macroCacheBuilt then
             BuildMacroCache()
         end
+        if WofiDB.includePlayers and not playerCacheBuilt then
+            BuildPlayerCache()
+        end
         WofiFrame:Show()
     end
 end
@@ -2288,9 +2551,13 @@ function addon:RefreshCache()
     if #tradeskillCache > 0 then
         RecalcTradeskillAvailability()
     end
+    if WofiDB.includePlayers then
+        BuildPlayerCache()
+    end
     local itemCount = WofiDB.includeItems and #itemCache or 0
     local macroCount = WofiDB.includeMacros and #macroCache or 0
-    print("|cff00ff00Wofi:|r Cache refreshed (" .. #spellCache .. " spells, " .. itemCount .. " items, " .. macroCount .. " macros)")
+    local playerCount = WofiDB.includePlayers and #playerCache or 0
+    print("|cff00ff00Wofi:|r Cache refreshed (" .. #spellCache .. " spells, " .. itemCount .. " items, " .. macroCount .. " macros, " .. playerCount .. " players)")
 end
 
 -- Slash commands
@@ -2335,8 +2602,15 @@ eventFrame:RegisterEvent("UPDATE_MACROS")
 eventFrame:RegisterEvent("TRADE_SKILL_SHOW")
 eventFrame:RegisterEvent("TRADE_SKILL_UPDATE")
 eventFrame:RegisterEvent("TRADE_SKILL_CLOSE")
+eventFrame:RegisterEvent("FRIENDLIST_UPDATE")
+eventFrame:RegisterEvent("BN_FRIEND_INFO_CHANGED")
+eventFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
+eventFrame:RegisterEvent("CHAT_MSG_WHISPER")
+eventFrame:RegisterEvent("CHAT_MSG_WHISPER_INFORM")
+eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 
-eventFrame:SetScript("OnEvent", function(self, event, arg1)
+eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
     if event == "ADDON_LOADED" and arg1 == addonName then
         -- Initialize saved variables
         if not WofiDB then
@@ -2383,6 +2657,40 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
             if WofiDB.includeMacros then
                 BuildMacroCache()
             end
+            -- Build player cache (delayed to let friend/guild data arrive)
+            if WofiDB.includePlayers then
+                C_Timer.After(2, function()
+                    if C_FriendList and C_FriendList.ShowFriends then
+                        C_FriendList.ShowFriends()
+                    end
+                    BuildPlayerCache()
+                    -- GreenWall integration (optional dependency)
+                    -- Hook gw.ReplicateMessage to capture co-guild player names as they chat
+                    if gw and gw.ReplicateMessage then
+                        local origReplicateMessage = gw.ReplicateMessage
+                        gw.ReplicateMessage = function(event, message, guild_id, arglist)
+                            origReplicateMessage(event, message, guild_id, arglist)
+                            if WofiDB.includePlayers and arglist and arglist[2] then
+                                local sender = arglist[2]
+                                local shortName = sender:match("^([^%-]+)") or sender
+                                if shortName ~= UnitName("player") and not coGuildPlayers[shortName] then
+                                    coGuildPlayers[shortName] = { timestamp = GetTime() }
+                                    SchedulePlayerCacheRebuild()
+                                end
+                            end
+                        end
+                    end
+                    -- Seed co-guild players from GreenWall's comember_cache
+                    if gw and gw.config and gw.config.comember_cache then
+                        C_Timer.After(5, function()
+                            if WofiDB.includePlayers then
+                                SeedCoGuildFromCache()
+                                SchedulePlayerCacheRebuild()
+                            end
+                        end)
+                    end
+                end)
+            end
             -- Apply or clear keybind
             if WofiDB.keybind then
                 ApplyKeybind()
@@ -2396,7 +2704,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
             end
             local bindMsg = WofiDB.keybind and (" Keybind: |cff88ff88" .. WofiDB.keybind .. "|r") or ""
             local tradeMsg = #tradeskillCache > 0 and (", " .. #tradeskillCache .. " recipes cached") or ""
-            print("|cff00ff00Wofi|r loaded. Type |cff88ff88/wofi|r to open." .. bindMsg .. tradeMsg)
+            local playerMsg = ""
+            print("|cff00ff00Wofi|r loaded. Type |cff88ff88/wofi|r to open." .. bindMsg .. tradeMsg .. playerMsg)
 
             -- Show welcome screen on first run
             if not WofiDB.welcomeShown then
@@ -2564,6 +2873,55 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         end
         if tradeskillQuantityPopup and tradeskillQuantityPopup:IsShown() then
             tradeskillQuantityPopup:Hide()
+        end
+
+    -- Player cache events
+    elseif event == "FRIENDLIST_UPDATE" or event == "BN_FRIEND_INFO_CHANGED" then
+        if playerCacheBuilt and WofiDB.includePlayers then
+            SchedulePlayerCacheRebuild()
+        end
+
+    elseif event == "GUILD_ROSTER_UPDATE" then
+        if playerCacheBuilt and WofiDB.includePlayers then
+            SchedulePlayerCacheRebuild()
+        end
+
+    elseif event == "CHAT_MSG_WHISPER" then
+        if WofiDB.includePlayers and arg2 then
+            TrackRecentPlayer(arg2)
+        end
+
+    elseif event == "CHAT_MSG_WHISPER_INFORM" then
+        if WofiDB.includePlayers and arg2 then
+            TrackRecentPlayer(arg2)
+        end
+
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        if WofiDB.includePlayers and UnitIsPlayer("target") and UnitIsFriend("player", "target") then
+            local name = UnitName("target")
+            local _, classUpper = UnitClass("target")
+            local classDisplay = classUpper and (classUpper:sub(1,1) .. classUpper:sub(2):lower()) or nil
+            local level = UnitLevel("target")
+            TrackRecentPlayer(name, classDisplay, classUpper, level)
+        end
+
+    elseif event == "GROUP_ROSTER_UPDATE" then
+        -- Track party/raid members as recent players
+        if WofiDB.includePlayers then
+            local numGroup = GetNumGroupMembers()
+            if numGroup > 0 then
+                local prefix = IsInRaid() and "raid" or "party"
+                for i = 1, numGroup do
+                    local unit = prefix .. i
+                    if UnitExists(unit) and UnitIsPlayer(unit) and UnitIsConnected(unit) then
+                        local name = UnitName(unit)
+                        local _, classUpper = UnitClass(unit)
+                        local classDisplay = classUpper and (classUpper:sub(1,1) .. classUpper:sub(2):lower()) or nil
+                        local level = UnitLevel(unit)
+                        TrackRecentPlayer(name, classDisplay, classUpper, level)
+                    end
+                end
+            end
         end
     end
 end)

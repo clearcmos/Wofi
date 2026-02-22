@@ -1,6 +1,6 @@
 # Wofi
 
-**Wofi** is an out-of-combat Spotlight/Rofi-style launcher for spells, items, macros, and professions. Search, cast with Enter, or drag (with right-click) to your action bars - a faster alternative to the spellbook for both casting and bar setup.
+**Wofi** is an out-of-combat Spotlight/Rofi-style launcher for spells, items, macros, professions, and players. Search, cast with Enter, or drag (with right-click) to your action bars - a faster alternative to the spellbook for both casting and bar setup.
 
 Built specifically for **TBC Classic Anniversary**.
 
@@ -21,6 +21,7 @@ Built specifically for **TBC Classic Anniversary**.
 - **Tradeskill crafting** - Craft profession recipes directly from the launcher with quantity popup, reagent display, and progress alerts
 - **Merchant search** - Search bar overlays merchant windows for quick item lookup and bulk purchasing
 - **Macro support** - Search and run account-wide and character-specific macros
+- **Player search** - Find and whisper friends, BNet friends, guild members, GreenWall co-guild members, and recently interacted players
 - **Keyboard-driven** - Navigate with arrow keys or Tab, activate with Enter
 - **Drag to action bar** - Right-drag any result to place it on your bars
 - **Custom keybind** - Set any key combo to open the launcher instantly
@@ -36,6 +37,7 @@ Built specifically for **TBC Classic Anniversary**.
 - **Profession crafting** - Search recipes across all professions, craft with one click
 - **Merchant shopping** - Find items in large vendor lists instantly
 - **Macros** - Quickly find and run any macro by name
+- **Quick whisper** - Type a friend or guildie's name, hit Enter to whisper
 - **Hunter tracking** - Quickly swap between tracking types
 - **Pre-combat buffs** - Find that one buff without hunting through tabs
 - **Alts** - When you can't remember where Blizzard put everything
@@ -80,6 +82,7 @@ Open with `/wofi config`:
 - **Include items** - Toggle bag item search on/off
 - **Include macros** - Toggle macro search on/off
 - **Include tradeskills** - Toggle profession recipe search on/off
+- **Include players** - Toggle online player search on/off (friends, guild, BNet, recent)
 - **Show all spell ranks** - Display all ranks instead of highest only
 - **Maximum search results** - Adjust from 4 to 12 results (default 8)
 - **Show craft progress notification** - Toggle the center-screen craft alert
