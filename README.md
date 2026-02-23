@@ -1,6 +1,6 @@
 # Wofi
 
-**Wofi** is an out-of-combat Spotlight/Rofi-style launcher for spells, items, macros, professions, players, zones, lockouts, and quests. Search, cast with Enter, or drag (with right-click) to your action bars - a faster alternative to the spellbook for both casting and bar setup.
+**Wofi** is an out-of-combat Spotlight/Rofi-style keyboard-driven launcher for spells, items, macros, professions, players, zones, lockouts, and quests. Search, cast with Enter, or drag (with right-click) to your action bars - a faster alternative to the spellbook for both casting and bar setup.
 
 Built specifically for **TBC Classic Anniversary**.
 
