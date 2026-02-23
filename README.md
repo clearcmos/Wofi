@@ -1,6 +1,6 @@
 # Wofi
 
-**Wofi** is an out-of-combat Spotlight/Rofi-style launcher for spells, items, macros, professions, and players. Search, cast with Enter, or drag (with right-click) to your action bars - a faster alternative to the spellbook for both casting and bar setup.
+**Wofi** is an out-of-combat Spotlight/Rofi-style launcher for spells, items, macros, professions, players, zones, lockouts, and quests. Search, cast with Enter, or drag (with right-click) to your action bars - a faster alternative to the spellbook for both casting and bar setup.
 
 Built specifically for **TBC Classic Anniversary**.
 
@@ -17,11 +17,14 @@ Built specifically for **TBC Classic Anniversary**.
 ## Features
 
 - **Fuzzy search** - Type "fb" to find "Fireball", "mana" to find potions and conjured gems
-- **Spells, items, macros, and professions** - Search your entire spellbook, usable bag items, macros, and profession recipes in one place
+- **Spells, items, macros, professions, and more** - Search your entire spellbook, usable bag items, macros, profession recipes, zones, instance lockouts, and active quests in one place
 - **Tradeskill crafting** - Craft profession recipes directly from the launcher with quantity popup, reagent display, and progress alerts
 - **Merchant search** - Search bar overlays merchant windows for quick item lookup and bulk purchasing
 - **Macro support** - Search and run account-wide and character-specific macros
 - **Player search** - Find and whisper friends, BNet friends, guild members, GreenWall co-guild members, and recently interacted players
+- **Zone search** - Search any game zone and open it on the World Map
+- **Instance lockouts** - Search your saved raids and heroics with live reset timers and boss progress; click to open the Raid Info panel
+- **Quest search** - Search active quests with completion status; click to open quest log and map (enhanced with Questie if installed)
 - **Keyboard-driven** - Navigate with arrow keys or Tab, activate with Enter
 - **Drag to action bar** - Right-drag any result to place it on your bars
 - **Custom keybind** - Set any key combo to open the launcher instantly
@@ -38,6 +41,8 @@ Built specifically for **TBC Classic Anniversary**.
 - **Merchant shopping** - Find items in large vendor lists instantly
 - **Macros** - Quickly find and run any macro by name
 - **Quick whisper** - Type a friend or guildie's name, hit Enter to whisper
+- **Lockout check** - Quickly see if you're saved and when it resets
+- **Zone lookup** - Jump to any zone on the World Map instantly
 - **Hunter tracking** - Quickly swap between tracking types
 - **Pre-combat buffs** - Find that one buff without hunting through tabs
 - **Alts** - When you can't remember where Blizzard put everything
@@ -83,6 +88,9 @@ Open with `/wofi config`:
 - **Include macros** - Toggle macro search on/off
 - **Include tradeskills** - Toggle profession recipe search on/off
 - **Include players** - Toggle online player search on/off (friends, guild, BNet, recent)
+- **Include zones** - Toggle zone search on/off
+- **Include lockouts** - Toggle instance lockout search on/off (raids/heroics)
+- **Include quests** - Toggle quest search on/off (requires Questie)
 - **Show all spell ranks** - Display all ranks instead of highest only
 - **Maximum search results** - Adjust from 4 to 12 results (default 8)
 - **Show craft progress notification** - Toggle the center-screen craft alert

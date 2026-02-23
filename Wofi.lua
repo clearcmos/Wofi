@@ -71,6 +71,9 @@ local TYPE_MAP      = "map"
 local TYPE_LOCKOUT  = "lockout"
 local TYPE_QUEST    = "quest"
 
+-- Entry types that don't support drag-to-action-bar
+local NO_DRAG_TYPES = { [TYPE_PLAYER]=true, [TYPE_MAP]=true, [TYPE_LOCKOUT]=true, [TYPE_QUEST]=true }
+
 -- Questie optional integration
 local function IsQuestieAvailable()
     return QuestieLoader ~= nil
@@ -275,7 +278,7 @@ local function BuildSpellCache()
 
     local numTabs = GetNumSpellTabs()
     for tabIndex = 1, numTabs do
-        local _, texture, offset, numSlots = GetSpellTabInfo(tabIndex)
+        local _, _, offset, numSlots = GetSpellTabInfo(tabIndex)
 
         for i = 1, numSlots do
             local slot = offset + i
@@ -311,21 +314,22 @@ end
 -- Item Cache
 -- ============================================================================
 
-local function IsUsableItem(bagID, slotID)
+-- Returns the container info table if the item is usable, nil otherwise
+local function GetUsableItemInfo(bagID, slotID)
     local info = C_Container.GetContainerItemInfo(bagID, slotID)
-    if not info or not info.itemID then return false end
+    if not info or not info.itemID then return nil end
 
     -- Check if item has a Use: spell effect (potions, gadgets, patterns, etc.)
     local itemSpell = GetItemSpell(info.itemID)
-    if itemSpell then return true end
+    if itemSpell then return info end
 
     -- Check if it's a Quest item (quest starters, etc.)
-    if select(6, GetItemInfo(info.itemID)) == "Quest" then return true end
+    if select(6, GetItemInfo(info.itemID)) == "Quest" then return info end
 
     -- Check if item is flagged as readable/usable (some quest items)
-    if info.isReadable then return true end
+    if info.isReadable then return info end
 
-    return false
+    return nil
 end
 
 local function BuildItemCache()
@@ -336,9 +340,9 @@ local function BuildItemCache()
     for bagID = 0, 4 do
         local numSlots = C_Container.GetContainerNumSlots(bagID)
         for slotID = 1, numSlots do
-            if IsUsableItem(bagID, slotID) then
-                local info = C_Container.GetContainerItemInfo(bagID, slotID)
-                if info and info.itemID and not seenIDs[info.itemID] then
+            local info = GetUsableItemInfo(bagID, slotID)
+            if info then
+                if not seenIDs[info.itemID] then
                     local itemName, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(info.itemID)
                     if itemName then
                         seenIDs[info.itemID] = true
@@ -628,7 +632,7 @@ local function BuildZoneCache()
                     nameLower  = zone.name:lower(),
                     mapID      = zone.mapID,
                     continent  = cont.name,
-                    texture    = "Interface\\Icons\\INV_Misc_Map_01",
+                    texture    = 134269,  -- INV_Misc_Map_01
                 })
             end
         end
@@ -659,15 +663,14 @@ local function BuildLockoutCache()
               instanceIDMostSig, isRaid, maxPlayers, difficultyName,
               numEncounters, progress = GetSavedInstanceInfo(i)
         if name then
-            local texture = "Interface\\Icons\\Spell_Arcane_Blink"
+            local texture = 135736  -- Spell_Arcane_Blink
             table.insert(lockoutCache, {
                 entryType      = TYPE_LOCKOUT,
                 name           = name,
                 nameLower      = name:lower(),
                 instanceIndex  = i,
                 isRaid         = isRaid,
-                reset          = reset,
-                resetStr       = FormatResetTime(reset),
+                expiresAt      = time() + reset,
                 numEncounters  = numEncounters or 0,
                 progress       = progress or 0,
                 maxPlayers     = maxPlayers,
@@ -742,21 +745,13 @@ local function FuzzyMatch(query, target)
     return nil -- Not all characters matched
 end
 
-local function Search(query)
-    local results = {}
-    if not query or query == "" then return results end
-
-    local queryLower = query:lower()
-    local exactMatches = {}
-    local startMatches = {}
-    local containsMatches = {}
-    local fuzzyMatches = {}
-
-    -- Search spells
-    for _, entry in ipairs(spellCache) do
+-- Match entries from a cache into the four priority buckets
+local function MatchEntries(cache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+    local queryLen = #queryLower
+    for _, entry in ipairs(cache) do
         if entry.nameLower == queryLower then
             table.insert(exactMatches, entry)
-        elseif entry.nameLower:sub(1, #queryLower) == queryLower then
+        elseif entry.nameLower:sub(1, queryLen) == queryLower then
             table.insert(startMatches, entry)
         elseif entry.nameLower:find(queryLower, 1, true) then
             table.insert(containsMatches, entry)
@@ -767,131 +762,39 @@ local function Search(query)
             end
         end
     end
+end
 
-    -- Search items (if enabled)
+local function Search(query)
+    local results = {}
+    if not query or query == "" then return results end
+
+    local queryLower = query:lower()
+    local exactMatches = {}
+    local startMatches = {}
+    local containsMatches = {}
+    local fuzzyMatches = {}
+
+    MatchEntries(spellCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     if WofiDB.includeItems then
-        for _, entry in ipairs(itemCache) do
-            if entry.nameLower == queryLower then
-                table.insert(exactMatches, entry)
-            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
-                table.insert(startMatches, entry)
-            elseif entry.nameLower:find(queryLower, 1, true) then
-                table.insert(containsMatches, entry)
-            else
-                local score = FuzzyMatch(queryLower, entry.nameLower)
-                if score then
-                    table.insert(fuzzyMatches, { entry = entry, score = score })
-                end
-            end
-        end
+        MatchEntries(itemCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     end
-
-    -- Search macros (if enabled)
     if WofiDB.includeMacros then
-        for _, entry in ipairs(macroCache) do
-            if entry.nameLower == queryLower then
-                table.insert(exactMatches, entry)
-            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
-                table.insert(startMatches, entry)
-            elseif entry.nameLower:find(queryLower, 1, true) then
-                table.insert(containsMatches, entry)
-            else
-                local score = FuzzyMatch(queryLower, entry.nameLower)
-                if score then
-                    table.insert(fuzzyMatches, { entry = entry, score = score })
-                end
-            end
-        end
+        MatchEntries(macroCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     end
-
-    -- Search tradeskill recipes (if enabled and any are cached)
     if WofiDB.includeTradeskills and #tradeskillCache > 0 then
-        for _, entry in ipairs(tradeskillCache) do
-            if entry.nameLower == queryLower then
-                table.insert(exactMatches, entry)
-            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
-                table.insert(startMatches, entry)
-            elseif entry.nameLower:find(queryLower, 1, true) then
-                table.insert(containsMatches, entry)
-            else
-                local score = FuzzyMatch(queryLower, entry.nameLower)
-                if score then
-                    table.insert(fuzzyMatches, { entry = entry, score = score })
-                end
-            end
-        end
+        MatchEntries(tradeskillCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     end
-
-    -- Search players (if enabled)
     if WofiDB.includePlayers and #playerCache > 0 then
-        for _, entry in ipairs(playerCache) do
-            if entry.nameLower == queryLower then
-                table.insert(exactMatches, entry)
-            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
-                table.insert(startMatches, entry)
-            elseif entry.nameLower:find(queryLower, 1, true) then
-                table.insert(containsMatches, entry)
-            else
-                local score = FuzzyMatch(queryLower, entry.nameLower)
-                if score then
-                    table.insert(fuzzyMatches, { entry = entry, score = score })
-                end
-            end
-        end
+        MatchEntries(playerCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     end
-
-    -- Search zones/maps (if enabled)
     if WofiDB.includeZones and #zoneCache > 0 then
-        for _, entry in ipairs(zoneCache) do
-            if entry.nameLower == queryLower then
-                table.insert(exactMatches, entry)
-            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
-                table.insert(startMatches, entry)
-            elseif entry.nameLower:find(queryLower, 1, true) then
-                table.insert(containsMatches, entry)
-            else
-                local score = FuzzyMatch(queryLower, entry.nameLower)
-                if score then
-                    table.insert(fuzzyMatches, { entry = entry, score = score })
-                end
-            end
-        end
+        MatchEntries(zoneCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     end
-
-    -- Search instance lockouts (if enabled)
     if WofiDB.includeLockouts and #lockoutCache > 0 then
-        for _, entry in ipairs(lockoutCache) do
-            if entry.nameLower == queryLower then
-                table.insert(exactMatches, entry)
-            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
-                table.insert(startMatches, entry)
-            elseif entry.nameLower:find(queryLower, 1, true) then
-                table.insert(containsMatches, entry)
-            else
-                local score = FuzzyMatch(queryLower, entry.nameLower)
-                if score then
-                    table.insert(fuzzyMatches, { entry = entry, score = score })
-                end
-            end
-        end
+        MatchEntries(lockoutCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     end
-
-    -- Search active quests (if enabled and Questie is available)
     if WofiDB.includeQuests and IsQuestieAvailable() and #questCache > 0 then
-        for _, entry in ipairs(questCache) do
-            if entry.nameLower == queryLower then
-                table.insert(exactMatches, entry)
-            elseif entry.nameLower:sub(1, #queryLower) == queryLower then
-                table.insert(startMatches, entry)
-            elseif entry.nameLower:find(queryLower, 1, true) then
-                table.insert(containsMatches, entry)
-            else
-                local score = FuzzyMatch(queryLower, entry.nameLower)
-                if score then
-                    table.insert(fuzzyMatches, { entry = entry, score = score })
-                end
-            end
-        end
+        MatchEntries(questCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     end
 
     -- Sort fuzzy matches by score (lower = better match)
@@ -972,20 +875,7 @@ local function SearchMerchant(query)
     local containsMatches = {}
     local fuzzyMatches = {}
 
-    for _, entry in ipairs(merchantItemCache) do
-        if entry.nameLower == queryLower then
-            table.insert(exactMatches, entry)
-        elseif entry.nameLower:sub(1, #queryLower) == queryLower then
-            table.insert(startMatches, entry)
-        elseif entry.nameLower:find(queryLower, 1, true) then
-            table.insert(containsMatches, entry)
-        else
-            local score = FuzzyMatch(queryLower, entry.nameLower)
-            if score then
-                table.insert(fuzzyMatches, { entry = entry, score = score })
-            end
-        end
-    end
+    MatchEntries(merchantItemCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
 
     table.sort(fuzzyMatches, function(a, b) return a.score < b.score end)
 
@@ -1140,11 +1030,9 @@ local function CreateResultButton(parent, index)
     btn:SetHeight(28)
     btn:SetPoint("LEFT", 4, 0)
     btn:SetPoint("RIGHT", -4, 0)
-    -- Mirrors Blizzard's action button pattern:
-    -- AnyUp fires secure action on click-release; LeftButtonDown needed for Enter override binding.
-    -- Drag (OnDragStart) suppresses the click because you release over a different frame.
-    btn:RegisterForClicks("AnyUp", "LeftButtonDown")
-    btn:RegisterForDrag("LeftButton", "RightButton")
+    -- Left-click to cast/use; right-drag to place on action bar.
+    btn:RegisterForClicks("LeftButtonDown")
+    btn:RegisterForDrag("RightButton")
 
     -- Default to spell type
     btn:SetAttribute("type", "spell")
@@ -1207,6 +1095,11 @@ local function CreateResultButton(parent, index)
         end
         if self.entry.entryType == TYPE_LOCKOUT then
             WofiFrame:Hide()
+            ToggleFriendsFrame(4)  -- Raid tab
+            if RaidInfoFrame then
+                RequestRaidInfo()
+                RaidInfoFrame:Show()
+            end
             return
         end
         if self.entry.entryType == TYPE_QUEST then
@@ -1336,7 +1229,7 @@ local function CreateResultButton(parent, index)
                 if self.entry.numEncounters > 0 then
                     GameTooltip:AddLine("Bosses: " .. self.entry.progress .. "/" .. self.entry.numEncounters, 0.8, 0.8, 0.8)
                 end
-                GameTooltip:AddLine("Resets in: " .. self.entry.resetStr, 0.6, 0.6, 0.6)
+                GameTooltip:AddLine("Resets in: " .. FormatResetTime(self.entry.expiresAt - time()), 0.6, 0.6, 0.6)
             elseif self.entry.entryType == TYPE_QUEST then
                 GameTooltip:SetText(self.entry.name, 1, 0.82, 0)
                 if self.entry.level then
@@ -1373,8 +1266,7 @@ local function CreateResultButton(parent, index)
     btn:SetScript("OnDragStart", function(self)
         if InCombatLockdown() then return end
         if not self.entry then return end
-        local noDrag = { [TYPE_PLAYER]=true, [TYPE_MAP]=true, [TYPE_LOCKOUT]=true, [TYPE_QUEST]=true }
-        if noDrag[self.entry.entryType] then return end
+        if NO_DRAG_TYPES[self.entry.entryType] then return end
 
         if self.entry.entryType == TYPE_SPELL then
             PickupSpellBookItem(self.entry.slot, BOOKTYPE_SPELL)
@@ -1639,7 +1531,7 @@ function addon:UpdateResults()
                 local cleared = entry.numEncounters > 0 and entry.progress >= entry.numEncounters
                 local progressStr = cleared and "cleared"
                     or (entry.numEncounters > 0 and entry.progress .. "/" .. entry.numEncounters or "locked")
-                btn.typeText:SetText("[" .. progressStr .. " | " .. entry.resetStr .. "]")
+                btn.typeText:SetText("[" .. progressStr .. " | " .. FormatResetTime(entry.expiresAt - time()) .. "]")
                 if cleared then
                     btn.typeText:SetTextColor(0.4, 1.0, 0.4)
                 else
@@ -2413,12 +2305,15 @@ local function BuildTradeskillCache()
     local profName = GetTradeSkillLine()
     if not profName or profName == "" or profName == "UNKNOWN" then return end
 
-    -- Remove only entries for THIS profession, keep all others
-    for i = #tradeskillCache, 1, -1 do
-        if tradeskillCache[i].professionName == profName then
-            table.remove(tradeskillCache, i)
+    -- Remove only entries for THIS profession, keep all others (O(n) compaction)
+    local j = 1
+    for i = 1, #tradeskillCache do
+        if tradeskillCache[i].professionName ~= profName then
+            tradeskillCache[j] = tradeskillCache[i]
+            j = j + 1
         end
     end
+    for i = j, #tradeskillCache do tradeskillCache[i] = nil end
 
     -- Expand all categories to index every recipe
     ExpandTradeSkillSubClass(0)
@@ -2468,22 +2363,27 @@ local function BuildTradeskillCache()
     end
 end
 
--- Recalculate numAvailable for all cached recipes based on current bag contents
--- Called on BAG_UPDATE_DELAYED so crafting counts stay accurate without opening professions
-RecalcTradeskillAvailability = function()
-    if #tradeskillCache == 0 then return end
-
-    -- Count all items in bags
-    local bagCounts = {}
+-- Count all items across all bags (shared by RecalcTradeskillAvailability and ShowTradeskillPopup)
+local function GetBagCounts()
+    local counts = {}
     for bagID = 0, 4 do
         local numSlots = C_Container.GetContainerNumSlots(bagID)
         for slotID = 1, numSlots do
             local info = C_Container.GetContainerItemInfo(bagID, slotID)
             if info and info.itemID then
-                bagCounts[info.itemID] = (bagCounts[info.itemID] or 0) + (info.stackCount or 1)
+                counts[info.itemID] = (counts[info.itemID] or 0) + (info.stackCount or 1)
             end
         end
     end
+    return counts
+end
+
+-- Recalculate numAvailable for all cached recipes based on current bag contents
+-- Called on BAG_UPDATE_DELAYED so crafting counts stay accurate without opening professions
+RecalcTradeskillAvailability = function()
+    if #tradeskillCache == 0 then return end
+
+    local bagCounts = GetBagCounts()
 
     -- Recalculate for each recipe that has stored reagent info
     for _, entry in ipairs(tradeskillCache) do
@@ -2540,6 +2440,9 @@ local function StartProfessionScan()
             ExpandSkillHeader(i)
         end
     end
+
+    -- Re-query after expansion (expanding headers increases the count)
+    numSkillLines = GetNumSkillLines()
 
     -- Discover player's crafting professions via skill lines
     autoScanQueue = {}
@@ -2740,17 +2643,7 @@ function addon:ShowTradeskillPopup(entry)
     local reagentLines = {}
     local liveAvailable = 0
     if entry.reagents and #entry.reagents > 0 then
-        -- Count current bag contents
-        local bagCounts = {}
-        for bagID = 0, 4 do
-            local numSlots = C_Container.GetContainerNumSlots(bagID)
-            for slotID = 1, numSlots do
-                local info = C_Container.GetContainerItemInfo(bagID, slotID)
-                if info and info.itemID then
-                    bagCounts[info.itemID] = (bagCounts[info.itemID] or 0) + (info.stackCount or 1)
-                end
-            end
-        end
+        local bagCounts = GetBagCounts()
 
         -- Calculate availability and build display
         local minCrafts = math.huge
@@ -2911,7 +2804,10 @@ function addon:Toggle()
         if WofiDB.includePlayers and not playerCacheBuilt then BuildPlayerCache() end
         if WofiDB.includeZones   and not zoneCacheBuilt   then BuildZoneCache()   end
         if WofiDB.includeQuests  and not questCacheBuilt  then BuildQuestCache()  end
-        if WofiDB.includeLockouts then BuildLockoutCache() end
+        if WofiDB.includeLockouts then
+            RequestRaidInfo()
+            BuildLockoutCache()
+        end
         WofiFrame:Show()
     end
 end
@@ -3312,7 +3208,11 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
 
     elseif event == "QUEST_LOG_UPDATE" then
         if questCacheBuilt and WofiDB.includeQuests then
-            BuildQuestCache()
+            if addon.questUpdateTimer then addon.questUpdateTimer:Cancel() end
+            addon.questUpdateTimer = C_Timer.NewTimer(0.5, function()
+                addon.questUpdateTimer = nil
+                BuildQuestCache()
+            end)
         end
 
     elseif event == "UPDATE_INSTANCE_INFO" then
