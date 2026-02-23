@@ -44,8 +44,6 @@ Built specifically for **TBC Classic Anniversary**.
 - **Lockout check** - Quickly see if you're saved and when it resets
 - **Zone lookup** - Jump to any zone on the World Map instantly
 - **Hunter tracking** - Quickly swap between tracking types
-- **Pre-combat buffs** - Find that one buff without hunting through tabs
-- **Alts** - When you can't remember where Blizzard put everything
 
 ---
 
