@@ -6,12 +6,6 @@ Built specifically for **TBC Classic Anniversary**.
 
 ![Wofi Launcher](https://github.com/clearcmos/Wofi/blob/main/assets/image1.png?raw=true)
 
-![Macro Search](https://github.com/clearcmos/Wofi/blob/main/assets/image5.png?raw=true)
-
-![Tradeskill Search](https://github.com/clearcmos/Wofi/blob/main/assets/image3.png?raw=true)
-
-![Craft Popup](https://github.com/clearcmos/Wofi/blob/main/assets/image4.png?raw=true)
-
 ---
 
 ## Features

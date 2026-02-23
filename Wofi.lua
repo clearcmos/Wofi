@@ -729,7 +729,7 @@ local function FuzzyMatch(query, target)
     local lastMatchIdx = 0
 
     for i = 1, targetLen do
-        if target:sub(i, i) == query:sub(queryIdx, queryIdx) then
+        if target:byte(i) == query:byte(queryIdx) then
             -- Penalty for gaps between matched characters
             if lastMatchIdx > 0 then
                 score = score + (i - lastMatchIdx - 1)
@@ -744,6 +744,9 @@ local function FuzzyMatch(query, target)
 
     return nil -- Not all characters matched
 end
+
+-- Reusable search buckets (avoid table allocation on every keystroke)
+local searchExact, searchStart, searchContains, searchFuzzy = {}, {}, {}, {}
 
 -- Match entries from a cache into the four priority buckets
 local function MatchEntries(cache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
@@ -765,53 +768,50 @@ local function MatchEntries(cache, queryLower, exactMatches, startMatches, conta
 end
 
 local function Search(query)
+    wipe(searchExact); wipe(searchStart); wipe(searchContains); wipe(searchFuzzy)
     local results = {}
     if not query or query == "" then return results end
 
     local queryLower = query:lower()
-    local exactMatches = {}
-    local startMatches = {}
-    local containsMatches = {}
-    local fuzzyMatches = {}
 
-    MatchEntries(spellCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+    MatchEntries(spellCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     if WofiDB.includeItems then
-        MatchEntries(itemCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+        MatchEntries(itemCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
     if WofiDB.includeMacros then
-        MatchEntries(macroCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+        MatchEntries(macroCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
     if WofiDB.includeTradeskills and #tradeskillCache > 0 then
-        MatchEntries(tradeskillCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+        MatchEntries(tradeskillCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
     if WofiDB.includePlayers and #playerCache > 0 then
-        MatchEntries(playerCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+        MatchEntries(playerCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
     if WofiDB.includeZones and #zoneCache > 0 then
-        MatchEntries(zoneCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+        MatchEntries(zoneCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
     if WofiDB.includeLockouts and #lockoutCache > 0 then
-        MatchEntries(lockoutCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+        MatchEntries(lockoutCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
     if WofiDB.includeQuests and IsQuestieAvailable() and #questCache > 0 then
-        MatchEntries(questCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+        MatchEntries(questCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
 
     -- Sort fuzzy matches by score (lower = better match)
-    table.sort(fuzzyMatches, function(a, b) return a.score < b.score end)
+    table.sort(searchFuzzy, function(a, b) return a.score < b.score end)
 
     -- Priority: exact > starts with > contains > fuzzy
     local maxResults = WofiDB.maxResults or 8
-    for _, entry in ipairs(exactMatches) do
+    for _, entry in ipairs(searchExact) do
         if #results < maxResults then table.insert(results, entry) end
     end
-    for _, entry in ipairs(startMatches) do
+    for _, entry in ipairs(searchStart) do
         if #results < maxResults then table.insert(results, entry) end
     end
-    for _, entry in ipairs(containsMatches) do
+    for _, entry in ipairs(searchContains) do
         if #results < maxResults then table.insert(results, entry) end
     end
-    for _, match in ipairs(fuzzyMatches) do
+    for _, match in ipairs(searchFuzzy) do
         if #results < maxResults then table.insert(results, match.entry) end
     end
 
@@ -866,30 +866,27 @@ local function FormatPrice(copper)
 end
 
 local function SearchMerchant(query)
+    wipe(searchExact); wipe(searchStart); wipe(searchContains); wipe(searchFuzzy)
     local results = {}
     if not query or query == "" then return results end
 
     local queryLower = query:lower()
-    local exactMatches = {}
-    local startMatches = {}
-    local containsMatches = {}
-    local fuzzyMatches = {}
 
-    MatchEntries(merchantItemCache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
+    MatchEntries(merchantItemCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
 
-    table.sort(fuzzyMatches, function(a, b) return a.score < b.score end)
+    table.sort(searchFuzzy, function(a, b) return a.score < b.score end)
 
     local maxResults = WofiDB.maxResults or 8
-    for _, entry in ipairs(exactMatches) do
+    for _, entry in ipairs(searchExact) do
         if #results < maxResults then table.insert(results, entry) end
     end
-    for _, entry in ipairs(startMatches) do
+    for _, entry in ipairs(searchStart) do
         if #results < maxResults then table.insert(results, entry) end
     end
-    for _, entry in ipairs(containsMatches) do
+    for _, entry in ipairs(searchContains) do
         if #results < maxResults then table.insert(results, entry) end
     end
-    for _, match in ipairs(fuzzyMatches) do
+    for _, match in ipairs(searchFuzzy) do
         if #results < maxResults then table.insert(results, match.entry) end
     end
 
@@ -1637,225 +1634,181 @@ end
 -- ============================================================================
 
 local function RegisterSettings()
-    -- Canvas frame for the options panel
-    local canvas = CreateFrame("Frame", "WofiSettingsCanvas", UIParent)
-    canvas:Hide()
+    local category, layout = Settings.RegisterVerticalLayoutCategory("Wofi")
 
-    local yPos = -16
+    -- Helper: register a boolean proxy setting + checkbox
+    local function AddCheckbox(key, name, tooltip, onChange)
+        local setting = Settings.RegisterProxySetting(category,
+            "WOFI_" .. key:upper(), Settings.VarType.Boolean, name,
+            defaults[key],
+            function() return WofiDB[key] end,
+            function(value)
+                WofiDB[key] = value
+                if onChange then onChange(value) end
+            end)
+        return Settings.CreateCheckbox(category, setting, tooltip)
+    end
+
+    -- Helper: register a numeric proxy setting + slider
+    local function AddSlider(key, name, tooltip, minVal, maxVal, step)
+        local setting = Settings.RegisterProxySetting(category,
+            "WOFI_" .. key:upper(), Settings.VarType.Number, name,
+            defaults[key],
+            function() return WofiDB[key] end,
+            function(value) WofiDB[key] = value end)
+        local options = Settings.CreateSliderOptions(minVal, maxVal, step)
+        options:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
+        return Settings.CreateSlider(category, setting, options, tooltip)
+    end
 
     -- Section: Search
-    local searchHeader = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    searchHeader:SetPoint("TOPLEFT", 16, yPos)
-    searchHeader:SetText("Search")
-    searchHeader:SetTextColor(1, 0.82, 0)
-    yPos = yPos - 30
+    layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Search"))
 
-    -- Include Items checkbox
-    local itemsCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    itemsCb:SetPoint("TOPLEFT", 16, yPos)
-    itemsCb.text:SetText("Include inventory items in search results")
-    itemsCb.text:SetFontObject(GameFontNormal)
-    itemsCb:SetScript("OnClick", function(self)
-        WofiDB.includeItems = self:GetChecked()
-        if WofiDB.includeItems and not itemCacheBuilt then
-            BuildItemCache()
-        end
-    end)
-    yPos = yPos - 30
+    AddCheckbox("includeItems", "Items",
+        "Include inventory items in search results.",
+        function(value)
+            if value and not itemCacheBuilt then BuildItemCache() end
+        end)
 
-    -- Include Macros checkbox
-    local macrosCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    macrosCb:SetPoint("TOPLEFT", 16, yPos)
-    macrosCb.text:SetText("Include macros in search results")
-    macrosCb.text:SetFontObject(GameFontNormal)
-    macrosCb:SetScript("OnClick", function(self)
-        WofiDB.includeMacros = self:GetChecked()
-        if WofiDB.includeMacros and not macroCacheBuilt then
-            BuildMacroCache()
-        end
-    end)
-    yPos = yPos - 30
+    AddCheckbox("includeMacros", "Macros",
+        "Include macros in search results.",
+        function(value)
+            if value and not macroCacheBuilt then BuildMacroCache() end
+        end)
 
-    -- Include Tradeskills checkbox
-    local tradeskillsCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    tradeskillsCb:SetPoint("TOPLEFT", 16, yPos)
-    tradeskillsCb.text:SetText("Include tradeskill recipes in search results")
-    tradeskillsCb.text:SetFontObject(GameFontNormal)
-    tradeskillsCb:SetScript("OnClick", function(self)
-        WofiDB.includeTradeskills = self:GetChecked()
-    end)
-    yPos = yPos - 30
+    AddCheckbox("includeTradeskills", "Tradeskill recipes",
+        "Include tradeskill recipes in search results.")
 
-    -- Include Players checkbox
-    local playersCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    playersCb:SetPoint("TOPLEFT", 16, yPos)
-    playersCb.text:SetText("Include online players in search results")
-    playersCb.text:SetFontObject(GameFontNormal)
-    playersCb:SetScript("OnClick", function(self)
-        WofiDB.includePlayers = self:GetChecked()
-        if WofiDB.includePlayers and not playerCacheBuilt then
-            BuildPlayerCache()
-        end
-    end)
-    yPos = yPos - 30
+    AddCheckbox("includePlayers", "Online players",
+        "Include online friends, guild members, and recent players in search results.",
+        function(value)
+            if value and not playerCacheBuilt then BuildPlayerCache() end
+        end)
 
-    -- Include Zones checkbox
-    local zonesCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    zonesCb:SetPoint("TOPLEFT", 16, yPos)
-    zonesCb.text:SetText("Include zone/map search")
-    zonesCb.text:SetFontObject(GameFontNormal)
-    zonesCb:SetScript("OnClick", function(self)
-        WofiDB.includeZones = self:GetChecked()
-        if WofiDB.includeZones and not zoneCacheBuilt then
-            BuildZoneCache()
-        end
-    end)
-    yPos = yPos - 30
+    AddCheckbox("includeZones", "Zones",
+        "Include game zones in search results.",
+        function(value)
+            if value and not zoneCacheBuilt then BuildZoneCache() end
+        end)
 
-    -- Include Lockouts checkbox
-    local lockoutsCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    lockoutsCb:SetPoint("TOPLEFT", 16, yPos)
-    lockoutsCb.text:SetText("Include instance lockouts in search results")
-    lockoutsCb.text:SetFontObject(GameFontNormal)
-    lockoutsCb:SetScript("OnClick", function(self)
-        WofiDB.includeLockouts = self:GetChecked()
-        if WofiDB.includeLockouts then
-            BuildLockoutCache()
-        end
-    end)
-    yPos = yPos - 30
+    AddCheckbox("includeLockouts", "Instance lockouts",
+        "Include saved instance lockouts (raids/heroics) in search results.",
+        function(value)
+            if value then BuildLockoutCache() end
+        end)
 
-    -- Include Quests checkbox (disabled when Questie is not loaded)
-    local questsCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    questsCb:SetPoint("TOPLEFT", 16, yPos)
-    questsCb.text:SetText("Include active quests in search results (requires Questie)")
-    questsCb.text:SetFontObject(GameFontNormal)
-    questsCb:SetScript("OnClick", function(self)
-        WofiDB.includeQuests = self:GetChecked()
-        if WofiDB.includeQuests and not questCacheBuilt then
-            BuildQuestCache()
-        end
-    end)
-    yPos = yPos - 30
+    AddCheckbox("includeQuests", "Active quests",
+        "Include active quests in search results. Requires Questie addon.",
+        function(value)
+            if value and not questCacheBuilt then BuildQuestCache() end
+        end)
 
-    -- Show all spell ranks checkbox
-    local allRanksCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    allRanksCb:SetPoint("TOPLEFT", 16, yPos)
-    allRanksCb.text:SetText("Show all spell ranks")
-    allRanksCb.text:SetFontObject(GameFontNormal)
-    allRanksCb:SetScript("OnClick", function(self)
-        WofiDB.allSpellRanks = self:GetChecked()
-        BuildSpellCache()
-    end)
-    yPos = yPos - 40
+    AddCheckbox("allSpellRanks", "Show all spell ranks",
+        "Show every rank of each spell instead of only the highest.",
+        function() BuildSpellCache() end)
 
     -- Section: Display
-    local displayHeader = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    displayHeader:SetPoint("TOPLEFT", 16, yPos)
-    displayHeader:SetText("Display")
-    displayHeader:SetTextColor(1, 0.82, 0)
-    yPos = yPos - 30
+    layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Display"))
 
-    -- Max results slider
-    local maxResultsLabel = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    maxResultsLabel:SetPoint("TOPLEFT", 16, yPos)
-    maxResultsLabel:SetText("Maximum search results")
-    yPos = yPos - 22
+    AddSlider("maxResults", "Maximum search results",
+        "Number of results shown in the search popup (4-12).", 4, 12, 1)
 
-    local maxResultsSlider = CreateFrame("Slider", "WofiMaxResultsSlider", canvas, "OptionsSliderTemplate")
-    maxResultsSlider:SetPoint("TOPLEFT", 20, yPos)
-    maxResultsSlider:SetSize(200, 17)
-    maxResultsSlider:SetMinMaxValues(4, 12)
-    maxResultsSlider:SetValueStep(1)
-    maxResultsSlider:SetObeyStepOnDrag(true)
-    maxResultsSlider.Low:SetText("4")
-    maxResultsSlider.High:SetText("12")
+    AddCheckbox("showCraftAlert", "Craft progress notification",
+        "Show a center-screen notification during multi-craft with remaining count.")
 
-    local maxResultsValue = canvas:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    maxResultsValue:SetPoint("LEFT", maxResultsSlider, "RIGHT", 12, 0)
-
-    maxResultsSlider:SetScript("OnValueChanged", function(self, value)
-        value = math.floor(value + 0.5)
-        WofiDB.maxResults = value
-        maxResultsValue:SetText(value)
-    end)
-    yPos = yPos - 34
-
-    -- Show craft alert checkbox
-    local craftAlertCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    craftAlertCb:SetPoint("TOPLEFT", 16, yPos)
-    craftAlertCb.text:SetText("Show craft progress notification")
-    craftAlertCb.text:SetFontObject(GameFontNormal)
-    craftAlertCb:SetScript("OnClick", function(self)
-        WofiDB.showCraftAlert = self:GetChecked()
-    end)
-    yPos = yPos - 30
-
-    -- Show merchant search checkbox
-    local merchantSearchCb = CreateFrame("CheckButton", nil, canvas, "UICheckButtonTemplate")
-    merchantSearchCb:SetPoint("TOPLEFT", 16, yPos)
-    merchantSearchCb.text:SetText("Show search bar on merchant windows")
-    merchantSearchCb.text:SetFontObject(GameFontNormal)
-    merchantSearchCb:SetScript("OnClick", function(self)
-        WofiDB.showMerchantSearch = self:GetChecked()
-    end)
-    yPos = yPos - 40
+    AddCheckbox("showMerchantSearch", "Merchant search bar",
+        "Show a search bar overlay on merchant windows.")
 
     -- Section: Keybind
-    local keybindHeader = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    keybindHeader:SetPoint("TOPLEFT", 16, yPos)
-    keybindHeader:SetText("Keybind")
-    keybindHeader:SetTextColor(1, 0.82, 0)
-    yPos = yPos - 26
+    layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Keybind"))
 
-    local keybindLabel = canvas:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    keybindLabel:SetPoint("TOPLEFT", 16, yPos)
+    local keybindInit = CreateFromMixins(SettingsListElementInitializer)
+    keybindInit:Init("SettingsListSectionHeaderTemplate", {name = ""})
+    keybindInit.GetExtent = function() return 60 end
+    keybindInit.InitFrame = function(self, frame)
+        frame.Title:SetText("")
 
-    local function UpdateKeybindLabel()
+        if not frame.wofiKeybindInit then
+            frame.wofiKeybindInit = true
+
+            local label = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+            label:SetPoint("TOPLEFT", 7, -4)
+            frame.keybindLabel = label
+
+            local setBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+            setBtn:SetSize(100, 22)
+            setBtn:SetPoint("TOPLEFT", 7, -24)
+            setBtn:SetText("Set Keybind")
+            setBtn:SetScript("OnClick", function() addon:ShowBindListener() end)
+            frame.setBtn = setBtn
+
+            local clearBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+            clearBtn:SetSize(80, 22)
+            clearBtn:SetPoint("LEFT", setBtn, "RIGHT", 8, 0)
+            clearBtn:SetText("Clear")
+            clearBtn:SetScript("OnClick", function()
+                if WofiDB.keybind then
+                    SetBinding(WofiDB.keybind, nil)
+                    SaveBindings(GetCurrentBindingSet())
+                    WofiDB.keybind = nil
+                    frame.keybindLabel:SetText("Current: |cff808080Not set|r")
+                    print("|cff00ff00Wofi:|r Keybind cleared")
+                end
+            end)
+        end
+
         if WofiDB.keybind then
-            keybindLabel:SetText("Current: |cff80ff80" .. WofiDB.keybind .. "|r")
+            frame.keybindLabel:SetText("Current: |cff80ff80" .. WofiDB.keybind .. "|r")
         else
-            keybindLabel:SetText("Current: |cff808080Not set|r")
+            frame.keybindLabel:SetText("Current: |cff808080Not set|r")
         end
     end
-    addon.UpdateKeybindLabel = UpdateKeybindLabel
-    yPos = yPos - 28
+    layout:AddInitializer(keybindInit)
 
-    local setBtn = CreateFrame("Button", nil, canvas, "UIPanelButtonTemplate")
-    setBtn:SetSize(100, 22)
-    setBtn:SetPoint("TOPLEFT", 16, yPos)
-    setBtn:SetText("Set Keybind")
-    setBtn:SetScript("OnClick", function()
-        addon:ShowBindListener()
-    end)
-
-    local clearBtn = CreateFrame("Button", nil, canvas, "UIPanelButtonTemplate")
-    clearBtn:SetSize(80, 22)
-    clearBtn:SetPoint("LEFT", setBtn, "RIGHT", 8, 0)
-    clearBtn:SetText("Clear")
-    clearBtn:SetScript("OnClick", function()
-        if WofiDB.keybind then
-            SetBinding(WofiDB.keybind, nil)
-            SaveBindings(GetCurrentBindingSet())
-            WofiDB.keybind = nil
-            UpdateKeybindLabel()
-            print("|cff00ff00Wofi:|r Keybind cleared")
+    addon.UpdateKeybindLabel = function()
+        if settingsCategoryID then
+            Settings.OpenToCategory(settingsCategoryID)
         end
-    end)
-    yPos = yPos - 40
+    end
 
     -- Section: Cache
-    local cacheHeader = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    cacheHeader:SetPoint("TOPLEFT", 16, yPos)
-    cacheHeader:SetText("Cache")
-    cacheHeader:SetTextColor(1, 0.82, 0)
-    yPos = yPos - 26
+    layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Cache"))
 
-    local statsLabel = canvas:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    statsLabel:SetPoint("TOPLEFT", 16, yPos)
-    statsLabel:SetTextColor(0.6, 0.6, 0.6)
+    local cacheInit = CreateFromMixins(SettingsListElementInitializer)
+    cacheInit:Init("SettingsListSectionHeaderTemplate", {name = ""})
+    cacheInit.GetExtent = function() return 56 end
+    cacheInit.InitFrame = function(self, frame)
+        frame.Title:SetText("")
 
-    local function UpdateStats()
+        if not frame.wofiCacheInit then
+            frame.wofiCacheInit = true
+
+            local statsLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            statsLabel:SetPoint("TOPLEFT", 7, -4)
+            statsLabel:SetTextColor(0.6, 0.6, 0.6)
+            frame.statsLabel = statsLabel
+
+            local refreshBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+            refreshBtn:SetSize(120, 22)
+            refreshBtn:SetPoint("TOPLEFT", 7, -24)
+            refreshBtn:SetText("Refresh Cache")
+            refreshBtn:SetScript("OnClick", function()
+                addon:RefreshCache()
+                local itemCount   = WofiDB.includeItems    and #itemCache    or 0
+                local macroCount  = WofiDB.includeMacros   and #macroCache   or 0
+                local tradeCount  = #tradeskillCache
+                local playerCount = WofiDB.includePlayers  and #playerCache  or 0
+                local zoneCount   = WofiDB.includeZones    and #zoneCache    or 0
+                local lockCount   = WofiDB.includeLockouts and #lockoutCache or 0
+                local questCount  = WofiDB.includeQuests   and #questCache   or 0
+                frame.statsLabel:SetText(
+                    #spellCache .. " spells, " .. itemCount .. " items, " ..
+                    macroCount .. " macros, " .. tradeCount .. " recipes, " ..
+                    playerCount .. " players, " .. zoneCount .. " zones, " ..
+                    lockCount .. " lockouts, " .. questCount .. " quests")
+            end)
+        end
+
         local itemCount   = WofiDB.includeItems    and #itemCache    or 0
         local macroCount  = WofiDB.includeMacros   and #macroCache   or 0
         local tradeCount  = #tradeskillCache
@@ -1863,52 +1816,14 @@ local function RegisterSettings()
         local zoneCount   = WofiDB.includeZones    and #zoneCache    or 0
         local lockCount   = WofiDB.includeLockouts and #lockoutCache or 0
         local questCount  = WofiDB.includeQuests   and #questCache   or 0
-        statsLabel:SetText(
+        frame.statsLabel:SetText(
             #spellCache .. " spells, " .. itemCount .. " items, " ..
             macroCount .. " macros, " .. tradeCount .. " recipes, " ..
             playerCount .. " players, " .. zoneCount .. " zones, " ..
-            lockCount .. " lockouts, " .. questCount .. " quests"
-        )
+            lockCount .. " lockouts, " .. questCount .. " quests")
     end
-    yPos = yPos - 28
+    layout:AddInitializer(cacheInit)
 
-    local refreshBtn = CreateFrame("Button", nil, canvas, "UIPanelButtonTemplate")
-    refreshBtn:SetSize(120, 22)
-    refreshBtn:SetPoint("TOPLEFT", 16, yPos)
-    refreshBtn:SetText("Refresh Cache")
-    refreshBtn:SetScript("OnClick", function()
-        addon:RefreshCache()
-        UpdateStats()
-    end)
-
-    -- OnRefresh: called when the settings panel shows this category
-    canvas.OnRefresh = function()
-        itemsCb:SetChecked(WofiDB.includeItems)
-        macrosCb:SetChecked(WofiDB.includeMacros)
-        tradeskillsCb:SetChecked(WofiDB.includeTradeskills)
-        playersCb:SetChecked(WofiDB.includePlayers)
-        zonesCb:SetChecked(WofiDB.includeZones)
-        lockoutsCb:SetChecked(WofiDB.includeLockouts)
-        if IsQuestieAvailable() then
-            questsCb:Enable()
-            questsCb:SetChecked(WofiDB.includeQuests)
-            questsCb.text:SetTextColor(1, 1, 1)
-        else
-            questsCb:Disable()
-            questsCb:SetChecked(false)
-            questsCb.text:SetTextColor(0.5, 0.5, 0.5)
-        end
-        allRanksCb:SetChecked(WofiDB.allSpellRanks)
-        maxResultsSlider:SetValue(WofiDB.maxResults or 8)
-        maxResultsValue:SetText(WofiDB.maxResults or 8)
-        craftAlertCb:SetChecked(WofiDB.showCraftAlert)
-        merchantSearchCb:SetChecked(WofiDB.showMerchantSearch)
-        UpdateKeybindLabel()
-        UpdateStats()
-    end
-
-    -- Register as canvas layout category
-    local category = Settings.RegisterCanvasLayoutCategory(canvas, "Wofi")
     Settings.RegisterAddOnCategory(category)
     settingsCategoryID = category:GetID()
 end
