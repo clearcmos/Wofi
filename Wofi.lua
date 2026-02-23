@@ -1725,24 +1725,38 @@ local function RegisterSettings()
     local keybindInit = CreateFromMixins(SettingsListElementInitializer)
     keybindInit:Init("SettingsListSectionHeaderTemplate", {name = ""})
     keybindInit.GetExtent = function() return 60 end
+    local function HideWofiContainers(f)
+        if f.wofiKeybindContainer then f.wofiKeybindContainer:Hide() end
+        if f.wofiCacheContainer then f.wofiCacheContainer:Hide() end
+    end
+
     keybindInit.InitFrame = function(self, frame)
         frame.Title:SetText("")
 
-        if not frame.wofiKeybindInit then
-            frame.wofiKeybindInit = true
+        -- Hook OnHide once so containers clean up when frame is recycled to any initializer
+        if not frame.wofiOnHideHooked then
+            frame.wofiOnHideHooked = true
+            frame:HookScript("OnHide", HideWofiContainers)
+        end
 
-            local label = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        HideWofiContainers(frame)
+
+        if not frame.wofiKeybindContainer then
+            local container = CreateFrame("Frame", nil, frame)
+            container:SetAllPoints()
+            frame.wofiKeybindContainer = container
+
+            local label = container:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
             label:SetPoint("TOPLEFT", 7, -4)
             frame.keybindLabel = label
 
-            local setBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+            local setBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
             setBtn:SetSize(100, 22)
             setBtn:SetPoint("TOPLEFT", 7, -24)
             setBtn:SetText("Set Keybind")
             setBtn:SetScript("OnClick", function() addon:ShowBindListener() end)
-            frame.setBtn = setBtn
 
-            local clearBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+            local clearBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
             clearBtn:SetSize(80, 22)
             clearBtn:SetPoint("LEFT", setBtn, "RIGHT", 8, 0)
             clearBtn:SetText("Clear")
@@ -1756,6 +1770,8 @@ local function RegisterSettings()
                 end
             end)
         end
+
+        frame.wofiKeybindContainer:Show()
 
         if WofiDB.keybind then
             frame.keybindLabel:SetText("Current: |cff80ff80" .. WofiDB.keybind .. "|r")
@@ -1780,15 +1796,25 @@ local function RegisterSettings()
     cacheInit.InitFrame = function(self, frame)
         frame.Title:SetText("")
 
-        if not frame.wofiCacheInit then
-            frame.wofiCacheInit = true
+        -- Hook OnHide once so containers clean up when frame is recycled to any initializer
+        if not frame.wofiOnHideHooked then
+            frame.wofiOnHideHooked = true
+            frame:HookScript("OnHide", HideWofiContainers)
+        end
 
-            local statsLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        HideWofiContainers(frame)
+
+        if not frame.wofiCacheContainer then
+            local container = CreateFrame("Frame", nil, frame)
+            container:SetAllPoints()
+            frame.wofiCacheContainer = container
+
+            local statsLabel = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             statsLabel:SetPoint("TOPLEFT", 7, -4)
             statsLabel:SetTextColor(0.6, 0.6, 0.6)
             frame.statsLabel = statsLabel
 
-            local refreshBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+            local refreshBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
             refreshBtn:SetSize(120, 22)
             refreshBtn:SetPoint("TOPLEFT", 7, -24)
             refreshBtn:SetText("Refresh Cache")
@@ -1808,6 +1834,8 @@ local function RegisterSettings()
                     lockCount .. " lockouts, " .. questCount .. " quests")
             end)
         end
+
+        frame.wofiCacheContainer:Show()
 
         local itemCount   = WofiDB.includeItems    and #itemCache    or 0
         local macroCount  = WofiDB.includeMacros   and #macroCache   or 0
