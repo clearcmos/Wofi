@@ -18,6 +18,7 @@ local defaults = {
     includeZones = true,
     includeLockouts = true,
     includeQuests = true,
+    includeReputations = true,
     welcomeShown = false,
 }
 
@@ -30,12 +31,14 @@ local playerCache = {}
 local zoneCache = {}
 local lockoutCache = {}
 local questCache = {}
+local reputationCache = {}
 local spellCacheBuilt = false
 local itemCacheBuilt = false
 local macroCacheBuilt = false
 local playerCacheBuilt = false
 local zoneCacheBuilt = false
 local questCacheBuilt = false
+local reputationCacheBuilt = false
 local recentPlayers = {}
 local recentPlayerCount = 0
 local coGuildPlayers = {}  -- session-only, populated by GreenWall message handler or comember_cache seed
@@ -70,9 +73,10 @@ local TYPE_PLAYER   = "player"
 local TYPE_MAP      = "map"
 local TYPE_LOCKOUT  = "lockout"
 local TYPE_QUEST    = "quest"
+local TYPE_REPUTATION = "reputation"
 
 -- Entry types that don't support drag-to-action-bar
-local NO_DRAG_TYPES = { [TYPE_PLAYER]=true, [TYPE_MAP]=true, [TYPE_LOCKOUT]=true, [TYPE_QUEST]=true }
+local NO_DRAG_TYPES = { [TYPE_PLAYER]=true, [TYPE_MAP]=true, [TYPE_LOCKOUT]=true, [TYPE_QUEST]=true, [TYPE_REPUTATION]=true }
 
 -- Questie optional integration
 local function IsQuestieAvailable()
@@ -602,8 +606,14 @@ local function BuildZoneCache()
     wipe(zoneCache)
     if not C_Map or not C_Map.GetFallbackWorldMapID then return end
 
-    -- Walk the map tree: world root -> continents -> zones
+    -- Walk the map tree: cosmic root -> world nodes / continents -> zones
+    -- GetFallbackWorldMapID() may return Azeroth (a World node), missing siblings like Outland.
+    -- Walk up to the Cosmic root so all world nodes and continents are found.
     local rootID = C_Map.GetFallbackWorldMapID()
+    local rootInfo = C_Map.GetMapInfo(rootID)
+    if rootInfo and rootInfo.parentMapID and rootInfo.parentMapID > 0 then
+        rootID = rootInfo.parentMapID
+    end
     local rootChildren = C_Map.GetMapChildrenInfo(rootID) or {}
 
     local continentIDs = {}
@@ -642,8 +652,78 @@ local function BuildZoneCache()
 end
 
 -- ============================================================================
+-- Reputation Cache
+-- ============================================================================
+
+local function BuildReputationCache()
+    wipe(reputationCache)
+
+    -- Expand all collapsed headers so we can scan every faction
+    local collapsed = {}
+    local i = 1
+    while i <= GetNumFactions() do
+        local name, _, _, _, _, _, _, _, isHeader, isCollapsed = GetFactionInfo(i)
+        if isHeader and isCollapsed then
+            table.insert(collapsed, name)
+            ExpandFactionHeader(i)
+        end
+        i = i + 1
+    end
+
+    -- Scan all factions
+    for idx = 1, GetNumFactions() do
+        local name, _, standingID, barMin, barMax, barValue,
+              _, _, isHeader, _, hasRep, _, _, _ = GetFactionInfo(idx)
+        if name and (not isHeader or hasRep) and standingID and standingID > 0 then
+            local standingLabel = GetText("FACTION_STANDING_LABEL" .. standingID, UnitSex("player"))
+            local current = barValue - barMin
+            local maximum = barMax - barMin
+            local color = FACTION_BAR_COLORS and FACTION_BAR_COLORS[standingID]
+            table.insert(reputationCache, {
+                entryType     = TYPE_REPUTATION,
+                name          = name,
+                nameLower     = name:lower(),
+                standingID    = standingID,
+                standingLabel = standingLabel or "Unknown",
+                current       = current,
+                maximum       = maximum,
+                color         = color,
+                texture       = 134327, -- INV_Misc_Note_01
+            })
+        end
+    end
+
+    -- Re-collapse headers we expanded (iterate in reverse to keep indices stable)
+    for idx = GetNumFactions(), 1, -1 do
+        local name, _, _, _, _, _, _, _, isHeader, isCollapsed = GetFactionInfo(idx)
+        if isHeader and not isCollapsed then
+            for _, cname in ipairs(collapsed) do
+                if cname == name then
+                    CollapseFactionHeader(idx)
+                    break
+                end
+            end
+        end
+    end
+
+    table.sort(reputationCache, function(a, b) return a.name < b.name end)
+    reputationCacheBuilt = true
+end
+
+-- ============================================================================
 -- Lockout Cache
 -- ============================================================================
+
+local function FormatNumber(n)
+    local s = tostring(n)
+    local pos = #s % 3
+    if pos == 0 then pos = 3 end
+    local parts = { s:sub(1, pos) }
+    for i = pos + 1, #s, 3 do
+        table.insert(parts, s:sub(i, i + 2))
+    end
+    return table.concat(parts, ",")
+end
 
 local function FormatResetTime(seconds)
     if seconds <= 0 then return "expired" end
@@ -795,6 +875,9 @@ local function Search(query)
     end
     if WofiDB.includeQuests and IsQuestieAvailable() and #questCache > 0 then
         MatchEntries(questCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
+    end
+    if WofiDB.includeReputations and #reputationCache > 0 then
+        MatchEntries(reputationCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
 
     -- Sort fuzzy matches by score (lower = better match)
@@ -1146,6 +1229,11 @@ local function CreateResultButton(parent, index)
             end
             return
         end
+        if self.entry.entryType == TYPE_REPUTATION then
+            WofiFrame:Hide()
+            ToggleCharacter("ReputationFrame")
+            return
+        end
         if WofiFrame:IsShown() then
             WofiFrame:Hide()
         end
@@ -1235,6 +1323,14 @@ local function CreateResultButton(parent, index)
                 if self.entry.isComplete then
                     GameTooltip:AddLine("Ready to turn in!", 0.4, 1.0, 0.4)
                 end
+            elseif self.entry.entryType == TYPE_REPUTATION then
+                local c = self.entry.color
+                local r, g, b = c and c.r or 1, c and c.g or 1, c and c.b or 1
+                GameTooltip:SetText(self.entry.name, r, g, b)
+                GameTooltip:AddLine(self.entry.standingLabel, r, g, b)
+                if self.entry.maximum and self.entry.maximum > 0 then
+                    GameTooltip:AddLine(FormatNumber(self.entry.current) .. " / " .. FormatNumber(self.entry.maximum), 0.8, 0.8, 0.8)
+                end
             end
             GameTooltip:AddLine(" ")
             if self.entry.entryType == TYPE_TRADESKILL then
@@ -1247,6 +1343,8 @@ local function CreateResultButton(parent, index)
                 GameTooltip:AddLine("Lockout info", 0.5, 0.5, 0.5)
             elseif self.entry.entryType == TYPE_QUEST then
                 GameTooltip:AddLine("Left-click to show on map", 0.5, 0.8, 1)
+            elseif self.entry.entryType == TYPE_REPUTATION then
+                GameTooltip:AddLine("Left-click to open reputation panel", 0.5, 0.8, 1)
             elseif self.entry.entryType == TYPE_MACRO then
                 GameTooltip:AddLine("Left-click to run, Right-drag to action bar", 0.5, 0.8, 1)
             else
@@ -1546,6 +1644,19 @@ function addon:UpdateResults()
                     btn.typeText:SetText("[quest]")
                     btn.typeText:SetTextColor(1.0, 0.82, 0.0)
                 end
+            elseif entry.entryType == TYPE_REPUTATION then
+                btn:SetAttribute("type", "")
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
+                local c = entry.color
+                local r, g, b = c and c.r or 1, c and c.g or 1, c and c.b or 1
+                local tag = entry.standingLabel
+                if entry.maximum and entry.maximum > 0 then
+                    tag = tag .. " " .. FormatNumber(entry.current) .. "/" .. FormatNumber(entry.maximum)
+                end
+                btn.typeText:SetText("[" .. tag .. "]")
+                btn.typeText:SetTextColor(r, g, b)
             end
 
             btn:Show()
@@ -1703,6 +1814,12 @@ local function RegisterSettings()
             if value and not questCacheBuilt then BuildQuestCache() end
         end)
 
+    AddCheckbox("includeReputations", "Reputations",
+        "Include player reputations in search results.",
+        function(value)
+            if value and not reputationCacheBuilt then BuildReputationCache() end
+        end)
+
     AddCheckbox("allSpellRanks", "Show all spell ranks",
         "Show every rank of each spell instead of only the highest.",
         function() BuildSpellCache() end)
@@ -1820,35 +1937,39 @@ local function RegisterSettings()
             refreshBtn:SetText("Refresh Cache")
             refreshBtn:SetScript("OnClick", function()
                 addon:RefreshCache()
-                local itemCount   = WofiDB.includeItems    and #itemCache    or 0
-                local macroCount  = WofiDB.includeMacros   and #macroCache   or 0
+                local itemCount   = WofiDB.includeItems       and #itemCache       or 0
+                local macroCount  = WofiDB.includeMacros      and #macroCache      or 0
                 local tradeCount  = #tradeskillCache
-                local playerCount = WofiDB.includePlayers  and #playerCache  or 0
-                local zoneCount   = WofiDB.includeZones    and #zoneCache    or 0
-                local lockCount   = WofiDB.includeLockouts and #lockoutCache or 0
-                local questCount  = WofiDB.includeQuests   and #questCache   or 0
+                local playerCount = WofiDB.includePlayers     and #playerCache     or 0
+                local zoneCount   = WofiDB.includeZones       and #zoneCache       or 0
+                local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
+                local questCount  = WofiDB.includeQuests      and #questCache      or 0
+                local repCount    = WofiDB.includeReputations and #reputationCache or 0
                 frame.statsLabel:SetText(
                     #spellCache .. " spells, " .. itemCount .. " items, " ..
                     macroCount .. " macros, " .. tradeCount .. " recipes, " ..
                     playerCount .. " players, " .. zoneCount .. " zones, " ..
-                    lockCount .. " lockouts, " .. questCount .. " quests")
+                    lockCount .. " lockouts, " .. questCount .. " quests, " ..
+                    repCount .. " reps")
             end)
         end
 
         frame.wofiCacheContainer:Show()
 
-        local itemCount   = WofiDB.includeItems    and #itemCache    or 0
-        local macroCount  = WofiDB.includeMacros   and #macroCache   or 0
+        local itemCount   = WofiDB.includeItems       and #itemCache       or 0
+        local macroCount  = WofiDB.includeMacros      and #macroCache      or 0
         local tradeCount  = #tradeskillCache
-        local playerCount = WofiDB.includePlayers  and #playerCache  or 0
-        local zoneCount   = WofiDB.includeZones    and #zoneCache    or 0
-        local lockCount   = WofiDB.includeLockouts and #lockoutCache or 0
-        local questCount  = WofiDB.includeQuests   and #questCache   or 0
+        local playerCount = WofiDB.includePlayers     and #playerCache     or 0
+        local zoneCount   = WofiDB.includeZones       and #zoneCache       or 0
+        local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
+        local questCount  = WofiDB.includeQuests      and #questCache      or 0
+        local repCount    = WofiDB.includeReputations and #reputationCache or 0
         frame.statsLabel:SetText(
             #spellCache .. " spells, " .. itemCount .. " items, " ..
             macroCount .. " macros, " .. tradeCount .. " recipes, " ..
             playerCount .. " players, " .. zoneCount .. " zones, " ..
-            lockCount .. " lockouts, " .. questCount .. " quests")
+            lockCount .. " lockouts, " .. questCount .. " quests, " ..
+            repCount .. " reps")
     end
     layout:AddInitializer(cacheInit)
 
@@ -2746,7 +2867,8 @@ function addon:Toggle()
         if WofiDB.includeMacros  and not macroCacheBuilt  then BuildMacroCache()  end
         if WofiDB.includePlayers and not playerCacheBuilt then BuildPlayerCache() end
         if WofiDB.includeZones   and not zoneCacheBuilt   then BuildZoneCache()   end
-        if WofiDB.includeQuests  and not questCacheBuilt  then BuildQuestCache()  end
+        if WofiDB.includeQuests       and not questCacheBuilt      then BuildQuestCache()      end
+        if WofiDB.includeReputations  and not reputationCacheBuilt then BuildReputationCache() end
         if WofiDB.includeLockouts then
             RequestRaidInfo()
             BuildLockoutCache()
@@ -2761,19 +2883,22 @@ function addon:RefreshCache()
     if WofiDB.includeMacros   then BuildMacroCache()   end
     if WofiDB.includePlayers  then BuildPlayerCache()  end
     if WofiDB.includeZones    then BuildZoneCache()    end
-    if WofiDB.includeLockouts then BuildLockoutCache() end
-    if WofiDB.includeQuests   then BuildQuestCache()   end
-    if #tradeskillCache > 0   then RecalcTradeskillAvailability() end
-    local itemCount   = WofiDB.includeItems    and #itemCache    or 0
-    local macroCount  = WofiDB.includeMacros   and #macroCache   or 0
-    local playerCount = WofiDB.includePlayers  and #playerCache  or 0
-    local zoneCount   = WofiDB.includeZones    and #zoneCache    or 0
-    local lockCount   = WofiDB.includeLockouts and #lockoutCache or 0
-    local questCount  = WofiDB.includeQuests   and #questCache   or 0
+    if WofiDB.includeLockouts    then BuildLockoutCache()    end
+    if WofiDB.includeQuests      then BuildQuestCache()      end
+    if WofiDB.includeReputations then BuildReputationCache() end
+    if #tradeskillCache > 0      then RecalcTradeskillAvailability() end
+    local itemCount   = WofiDB.includeItems       and #itemCache       or 0
+    local macroCount  = WofiDB.includeMacros      and #macroCache      or 0
+    local playerCount = WofiDB.includePlayers     and #playerCache     or 0
+    local zoneCount   = WofiDB.includeZones       and #zoneCache       or 0
+    local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
+    local questCount  = WofiDB.includeQuests      and #questCache      or 0
+    local repCount    = WofiDB.includeReputations and #reputationCache or 0
     print("|cff00ff00Wofi:|r Cache refreshed (" ..
         #spellCache .. " spells, " .. itemCount .. " items, " ..
         macroCount .. " macros, " .. playerCount .. " players, " ..
-        zoneCount .. " zones, " .. lockCount .. " lockouts, " .. questCount .. " quests)")
+        zoneCount .. " zones, " .. lockCount .. " lockouts, " ..
+        questCount .. " quests, " .. repCount .. " reps)")
 end
 
 -- Slash commands
@@ -2827,6 +2952,7 @@ eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
 eventFrame:RegisterEvent("UPDATE_INSTANCE_INFO")
+eventFrame:RegisterEvent("UPDATE_FACTION")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
     if event == "ADDON_LOADED" and arg1 == addonName then
@@ -2877,9 +3003,10 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
                 BuildMacroCache()
             end
             -- Build zone, lockout, and quest caches
-            if WofiDB.includeZones    then BuildZoneCache()    end
-            if WofiDB.includeLockouts then BuildLockoutCache() end
-            if WofiDB.includeQuests   then BuildQuestCache()   end
+            if WofiDB.includeZones       then BuildZoneCache()       end
+            if WofiDB.includeLockouts    then BuildLockoutCache()    end
+            if WofiDB.includeQuests      then BuildQuestCache()      end
+            if WofiDB.includeReputations then BuildReputationCache() end
 
             -- Build player cache (delayed to let friend/guild data arrive)
             if WofiDB.includePlayers then
@@ -3161,6 +3288,10 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
     elseif event == "UPDATE_INSTANCE_INFO" then
         if WofiDB.includeLockouts then
             BuildLockoutCache()
+        end
+    elseif event == "UPDATE_FACTION" then
+        if WofiDB.includeReputations then
+            BuildReputationCache()
         end
     end
 end)

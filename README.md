@@ -1,6 +1,6 @@
 # Wofi
 
-**Wofi** is an out-of-combat Spotlight/Rofi-style keyboard-driven launcher for spells, items, macros, professions, players, zones, lockouts, and quests. Search, cast with Enter, or drag (with right-click) to your action bars - a faster alternative to the spellbook for both casting and bar setup.
+**Wofi** is an out-of-combat Spotlight/Rofi-style keyboard-driven launcher for spells, items, macros, professions, players, zones, lockouts, quests, and reputations. Search, cast with Enter, or drag (with right-click) to your action bars - a faster alternative to the spellbook for both casting and bar setup.
 
 Built specifically for **TBC Classic Anniversary**.
 
@@ -19,6 +19,7 @@ Built specifically for **TBC Classic Anniversary**.
 - **Zone search** - Search any game zone and open it on the World Map
 - **Instance lockouts** - Search your saved raids and heroics with live reset timers and boss progress; click to open the Raid Info panel
 - **Quest search** - Search active quests with completion status; click to open quest log and map (enhanced with Questie if installed)
+- **Reputation search** - Search all faction reputations with standing level and progress (e.g., `[Honored 5,000/12,000]`); click to open the Reputation panel
 - **Keyboard-driven** - Navigate with arrow keys or Tab, activate with Enter
 - **Drag to action bar** - Right-drag any result to place it on your bars
 - **Custom keybind** - Set any key combo to open the launcher instantly
@@ -37,6 +38,7 @@ Built specifically for **TBC Classic Anniversary**.
 - **Quick whisper** - Type a friend or guildie's name, hit Enter to whisper
 - **Lockout check** - Quickly see if you're saved and when it resets
 - **Zone lookup** - Jump to any zone on the World Map instantly
+- **Reputation check** - See your standing and progress with any faction at a glance
 - **Hunter tracking** - Quickly swap between tracking types
 
 ---
@@ -83,6 +85,7 @@ Open with `/wofi config`:
 - **Include zones** - Toggle zone search on/off
 - **Include lockouts** - Toggle instance lockout search on/off (raids/heroics)
 - **Include quests** - Toggle quest search on/off (requires Questie)
+- **Include reputations** - Toggle reputation search on/off
 - **Show all spell ranks** - Display all ranks instead of highest only
 - **Maximum search results** - Adjust from 4 to 12 results (default 8)
 - **Show craft progress notification** - Toggle the center-screen craft alert

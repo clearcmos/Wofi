@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.1
+
+### Added
+- **Reputation search** - Search all faction reputations with standing level and comma-formatted progress; click to open Reputation panel
+
+### Fixed
+- Settings panel duplicate elements when scrolling (frame recycling)
+- Zone cache missing Outland zones (now walks up to Cosmic root map)
+
 ## v1.1.0
 
 ### Added

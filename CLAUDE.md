@@ -7,7 +7,7 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 
 ### Core Files
 - `Wofi.toc` - Addon manifest (Interface 20505 for Classic Anniversary)
-- `Wofi.lua` - All addon logic in a single file (~3220 lines)
+- `Wofi.lua` - All addon logic in a single file (~3300 lines)
 
 ### Key Components
 1. **Spell Cache** - Builds a searchable cache of all non-passive spells from the player's spellbook
@@ -15,18 +15,19 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 3. **Macro Cache** - Scans account-wide (1-120) and character-specific (121-138) macros via GetMacroInfo
 4. **Tradeskill Cache** - Auto-scans all crafting professions on login to index recipes with reagent data; persisted in SavedVariables across sessions
 5. **Player Cache** - Indexes online friends, BNet friends (same server), guild members, GreenWall co-guild members (optional dependency), and recently interacted players; session-only recent and co-guild tracking
-6. **Zone Cache** - Indexes all game zones/subzones from C_Map for location search; built once at login (static data)
+6. **Zone Cache** - Indexes all game zones/subzones from C_Map for location search; walks up from GetFallbackWorldMapID() to Cosmic root to capture all continents (Azeroth + Outland); built once at login (static data)
 7. **Lockout Cache** - Indexes saved instance lockouts (raids/heroics) via GetSavedInstanceInfo; rebuilt on every Wofi open with RequestRaidInfo() for fresh server data; reset timers computed live from absolute expiry timestamps
 8. **Quest Cache** - Indexes active quests from the quest log; rebuilt on QUEST_LOG_UPDATE; uses Questie for map navigation (optional dependency)
-9. **Merchant Cache** - Built when a merchant window opens, indexes all vendor items for search
-10. **Search UI** - Minimalist popup with EditBox for typing and results frame
-11. **SecureActionButtons** - Result buttons use SecureActionButtonTemplate for spells (`type="spell"`), items (`type="item"`), and macros (`type="macro"`)
-12. **Tradeskill Craft Popup** - Quantity input with reagent display, live bag counts, MAX button, and secure create button
-13. **Merchant Search Overlay** - Search bar that appears on merchant windows with buy/quantity functionality
-14. **Craft Progress Alert** - Center-screen notification showing remaining craft count with fade animations and cancel detection
-15. **Keybind System** - Custom keybind stored in SavedVariables, applied via SetBindingClick on a macro button
-16. **Config GUI** - Options panel for settings (opened via `/wofi config`)
-17. **Welcome Screen** - First-run setup dialog shown on initial install
+9. **Reputation Cache** - Scans all player faction standings via GetFactionInfo; expands collapsed headers to access all factions; rebuilt on UPDATE_FACTION; displays standing label and progress with comma-formatted numbers
+10. **Merchant Cache** - Built when a merchant window opens, indexes all vendor items for search
+11. **Search UI** - Minimalist popup with EditBox for typing and results frame
+12. **SecureActionButtons** - Result buttons use SecureActionButtonTemplate for spells (`type="spell"`), items (`type="item"`), and macros (`type="macro"`)
+13. **Tradeskill Craft Popup** - Quantity input with reagent display, live bag counts, MAX button, and secure create button
+14. **Merchant Search Overlay** - Search bar that appears on merchant windows with buy/quantity functionality
+15. **Craft Progress Alert** - Center-screen notification showing remaining craft count with fade animations and cancel detection
+16. **Keybind System** - Custom keybind stored in SavedVariables, applied via SetBindingClick on a macro button
+17. **Config GUI** - Options panel for settings (opened via `/wofi config`)
+18. **Welcome Screen** - First-run setup dialog shown on initial install
 
 ### WoW API Constraints
 - **Spell/item usage requires SecureActionButtonTemplate** - Cannot call CastSpell() or UseItem() directly
@@ -51,6 +52,7 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 - `includeZones` (boolean) - Whether to include game zones in search results
 - `includeLockouts` (boolean) - Whether to include instance lockouts (raids/heroics) in search results
 - `includeQuests` (boolean) - Whether to include active quests in search results (requires Questie)
+- `includeReputations` (boolean) - Whether to include player reputations in search results
 - `welcomeShown` (boolean) - Whether the first-run welcome screen has been shown
 - `tradeskillCache` (table) - Persisted recipe data across sessions for all scanned professions
 
@@ -64,6 +66,7 @@ Each search result has an `entryType` field:
 - `"zone"` - Game zone, opens World Map to that zone on click (not a secure action)
 - `"lockout"` - Saved instance (raid/heroic), opens Raid Info panel via `ToggleFriendsFrame(4)` on click; reset timer computed live from stored `expiresAt` timestamp
 - `"quest"` - Active quest (requires Questie), selects quest log entry and opens World Map; uses Questie API for zone navigation
+- `"reputation"` - Player faction reputation, opens Reputation panel via `ToggleCharacter("ReputationFrame")` on click; displays standing label color-coded with `FACTION_BAR_COLORS` and comma-formatted progress (e.g., `[Honored 5,000/12,000]`)
 
 ## Slash Commands
 - `/wofi` - Toggle launcher
@@ -88,6 +91,7 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 - `GROUP_ROSTER_UPDATE` - Track party/raid members as recent players
 - `QUEST_LOG_UPDATE` - Rebuild quest cache when quests change
 - `UPDATE_INSTANCE_INFO` - Rebuild lockout cache when instance saves change
+- `UPDATE_FACTION` - Rebuild reputation cache when faction standings change
 
 ## Development Notes
 - Uses `BackdropTemplate` for frame backgrounds (required in modern Classic)
@@ -102,6 +106,8 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 - Zone results show `[zone]` indicator; clicking opens World Map to that zone
 - Lockout results show `[progress | time]` with live countdown; clicking opens Raid Info panel (`ToggleFriendsFrame(4)`)
 - Quest results show `[quest]` indicator with completion status; clicking opens quest log and World Map (Questie-enhanced navigation)
+- Reputation results show `[Standing current/max]` tag (e.g., `[Honored 5,000/12,000]`) color-coded by standing; clicking opens Reputation panel
+- `FormatNumber()` utility formats numbers with thousands separators (e.g., 12345 → "12,345"); used in reputation displays
 - Player results show source tag (`[friend]`, `[bnet]`, `[guild]`, `[coguild]`, `[recent]`) with class icons and colored indicators
 - Result buttons use `RegisterForClicks("LeftButtonDown")` for immediate spell/item activation
 - Result buttons use `RegisterForDrag("RightButton")` to allow placing spells/items/macros on action bars
@@ -115,10 +121,10 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 
 ## Config GUI
 The config panel (`/wofi config`) uses the native Settings API (ESC > Options > AddOns > Wofi):
-- **Search section**: Checkboxes for include items, include macros, include tradeskills, include players, include zones, include lockouts, include quests (requires Questie), show all spell ranks
+- **Search section**: Checkboxes for include items, include macros, include tradeskills, include players, include zones, include lockouts, include quests (requires Questie), include reputations, show all spell ranks
 - **Display section**: Max results slider (4-12), show craft progress notification, show merchant search bar
 - **Keybind section**: Current binding display, Set/Clear buttons
-- **Cache section**: Refresh caches button, cache stats display (spell/item/macro/recipe/player/zone/lockout/quest counts)
+- **Cache section**: Refresh caches button, cache stats display (spell/item/macro/recipe/player/zone/lockout/quest/reputation counts)
 
 ## Development Workflow
 
@@ -179,6 +185,10 @@ This creates `~/Wofi-x.x.x.zip` containing a `Wofi/` folder with the addon files
 28. Click/Enter a lockout result - verify Raid Info panel opens
 29. Accept/complete a quest - verify quest cache updates (requires Questie)
 30. Click/Enter a quest result - verify quest log selects and World Map opens
+31. Search for a faction name (e.g., "aldor", "cenarion") - verify `[Standing current/max]` tag with faction color
+32. Hover reputation result - verify tooltip shows standing label and progress
+33. Click/Enter a reputation result - verify Reputation panel opens
+34. Gain reputation - verify cache updates (UPDATE_FACTION event)
 
 ## WoW API Reference
 
