@@ -3,7 +3,7 @@
 ## Notes: Spotlight/Rofi-style spell & item launcher - WoW + Rofi = Wofi
 ## Author: clearcmos
 ## Version: 1.1.1
-## OptionalDeps: GreenWall
+## OptionalDeps: GreenWall, AtlasLootClassic
 ## SavedVariables: WofiDB
 
 Wofi.lua

@@ -19,6 +19,8 @@ local defaults = {
     includeLockouts = true,
     includeQuests = true,
     includeReputations = true,
+    includeAddons = true,
+    includeInstances = true,
     welcomeShown = false,
 }
 
@@ -32,6 +34,8 @@ local zoneCache = {}
 local lockoutCache = {}
 local questCache = {}
 local reputationCache = {}
+local addonCache = {}
+local instanceCache = {}
 local spellCacheBuilt = false
 local itemCacheBuilt = false
 local macroCacheBuilt = false
@@ -39,6 +43,8 @@ local playerCacheBuilt = false
 local zoneCacheBuilt = false
 local questCacheBuilt = false
 local reputationCacheBuilt = false
+local addonCacheBuilt = false
+local instanceCacheBuilt = false
 local recentPlayers = {}
 local recentPlayerCount = 0
 local coGuildPlayers = {}  -- session-only, populated by GreenWall message handler or comember_cache seed
@@ -74,14 +80,25 @@ local TYPE_MAP      = "map"
 local TYPE_LOCKOUT  = "lockout"
 local TYPE_QUEST    = "quest"
 local TYPE_REPUTATION = "reputation"
+local TYPE_ADDON     = "addon"
+local TYPE_INSTANCE  = "instance"
+local TYPE_BOSS      = "boss"
 
 -- Entry types that don't support drag-to-action-bar
-local NO_DRAG_TYPES = { [TYPE_PLAYER]=true, [TYPE_MAP]=true, [TYPE_LOCKOUT]=true, [TYPE_QUEST]=true, [TYPE_REPUTATION]=true }
+local NO_DRAG_TYPES = { [TYPE_PLAYER]=true, [TYPE_MAP]=true, [TYPE_LOCKOUT]=true, [TYPE_QUEST]=true, [TYPE_REPUTATION]=true, [TYPE_ADDON]=true, [TYPE_INSTANCE]=true, [TYPE_BOSS]=true }
 
 -- Questie optional integration
 local function IsQuestieAvailable()
     return QuestieLoader ~= nil
 end
+
+-- AtlasLoot optional integration
+local function IsAtlasLootAvailable()
+    return AtlasLoot ~= nil and AtlasLoot.ItemDB ~= nil
+end
+
+-- Loot browser frame (lazy-created)
+local lootBrowserFrame = nil
 
 -- Player source priority and display info
 local PLAYER_SOURCE_RECENT  = 1
@@ -711,6 +728,175 @@ local function BuildReputationCache()
 end
 
 -- ============================================================================
+-- Addon Cache
+-- ============================================================================
+
+local function BuildAddonCache()
+    wipe(addonCache)
+
+    local numAddons = C_AddOns.GetNumAddOns()
+    for i = 1, numAddons do
+        local name, title, notes, loadable, reason, security = C_AddOns.GetAddOnInfo(i)
+        if name then
+            local enabled = C_AddOns.GetAddOnEnableState(i) > 0
+            local displayName = title and title ~= "" and title or name
+            -- Strip color codes from title for clean display/search
+            local cleanName = displayName:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+            table.insert(addonCache, {
+                entryType   = TYPE_ADDON,
+                name        = cleanName,
+                nameLower   = cleanName:lower(),
+                addonName   = name,      -- internal name for Enable/Disable API
+                addonIndex  = i,
+                title       = title,
+                notes       = notes,
+                enabled     = enabled,
+                loaded      = C_AddOns.IsAddOnLoaded(i),
+                texture     = 134400,    -- INV_Misc_QuestionMark
+            })
+        end
+    end
+
+    table.sort(addonCache, function(a, b) return a.name < b.name end)
+    addonCacheBuilt = true
+end
+
+-- ============================================================================
+-- Instance/Boss Cache (AtlasLoot integration)
+-- ============================================================================
+
+local ATLASLOOT_MODULE = "AtlasLootClassic_DungeonsAndRaids"
+local atlasLootModuleLoaded = false
+
+local function BuildInstanceCache()
+    wipe(instanceCache)
+
+    if not IsAtlasLootAvailable() then
+        instanceCacheBuilt = false
+        return
+    end
+
+    local moduleData = AtlasLoot.ItemDB:Get(ATLASLOOT_MODULE)
+    if not moduleData then
+        instanceCacheBuilt = false
+        return
+    end
+
+    for instanceKey, instData in pairs(moduleData) do
+        if type(instData) == "table" and instData.items and instData.MapID then
+            -- Resolve instance name
+            local instName
+            if instData.GetName then
+                -- GetName() returns color-coded names; strip codes for search
+                local raw = instData:GetName()
+                if raw then
+                    instName = raw:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+                end
+            end
+            if not instName or instName == "" or instName == "UNKNOWN" then
+                instName = C_Map.GetAreaInfo(instData.MapID) or instanceKey
+            end
+
+            -- Determine content type (dungeon vs raid)
+            local isDungeon = true
+            local contentLabel = "dungeon"
+            -- AtlasLoot ContentType constants: check for raid content types
+            if instData.ContentType and instData.ContentType >= 3 then
+                isDungeon = false
+                contentLabel = "raid"
+            end
+
+            -- Determine available difficulties (numeric keys whose values are loot tables)
+            local difficulties = {}
+            if instData.items and #instData.items > 0 then
+                for _, bossData in ipairs(instData.items) do
+                    if type(bossData) == "table" then
+                        for k, v in pairs(bossData) do
+                            if type(k) == "number" and k > 0 and type(v) == "table" then
+                                difficulties[k] = true
+                            end
+                        end
+                    end
+                end
+            end
+            local diffList = {}
+            for k in pairs(difficulties) do
+                table.insert(diffList, k)
+            end
+            table.sort(diffList)
+
+            -- Instance icon: use a dungeon/raid texture
+            local instTexture = isDungeon and 136333 or 136333  -- INV_Misc_Map_01
+
+            -- Add instance entry
+            table.insert(instanceCache, {
+                entryType    = TYPE_INSTANCE,
+                name         = instName,
+                nameLower    = instName:lower(),
+                instanceKey  = instanceKey,
+                contentLabel = contentLabel,
+                isDungeon    = isDungeon,
+                difficulties = diffList,
+                texture      = instTexture,
+            })
+
+            -- Add boss entries
+            for bossIndex, bossData in ipairs(instData.items) do
+                if type(bossData) == "table" and bossData.name then
+                    local bossName = bossData.name
+                    -- Strip color codes from boss name if any
+                    bossName = bossName:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+                    if bossName and bossName ~= "" then
+                        -- Extract creature display ID for portrait
+                        local displayID = nil
+                        if bossData.DisplayIDs and bossData.DisplayIDs[1] and bossData.DisplayIDs[1][1] then
+                            displayID = bossData.DisplayIDs[1][1]
+                        end
+                        table.insert(instanceCache, {
+                            entryType    = TYPE_BOSS,
+                            name         = bossName,
+                            nameLower    = bossName:lower(),
+                            instanceKey  = instanceKey,
+                            instanceName = instName,
+                            bossIndex    = bossIndex,
+                            displayID    = displayID,
+                            texture      = 134400,  -- fallback: INV_Misc_QuestionMark
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    -- Pre-cache all loot item data so GetItemInfo() is ready when the browser opens
+    for instanceKey, instData in pairs(moduleData) do
+        if type(instData) == "table" and instData.items then
+            for _, bossData in ipairs(instData.items) do
+                if type(bossData) == "table" then
+                    for k, v in pairs(bossData) do
+                        if type(k) == "number" and k > 0 and type(v) == "table" then
+                            for _, lootEntry in ipairs(v) do
+                                if type(lootEntry) == "table" and type(lootEntry[2]) == "number" and lootEntry[2] > 0 then
+                                    GetItemInfo(lootEntry[2])  -- triggers server cache request
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    table.sort(instanceCache, function(a, b)
+        if a.entryType ~= b.entryType then
+            return a.entryType < b.entryType  -- bosses and instances grouped
+        end
+        return a.name < b.name
+    end)
+    instanceCacheBuilt = true
+end
+
+-- ============================================================================
 -- Lockout Cache
 -- ============================================================================
 
@@ -878,6 +1064,12 @@ local function Search(query)
     end
     if WofiDB.includeReputations and #reputationCache > 0 then
         MatchEntries(reputationCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
+    end
+    if WofiDB.includeAddons and #addonCache > 0 then
+        MatchEntries(addonCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
+    end
+    if WofiDB.includeInstances and #instanceCache > 0 then
+        MatchEntries(instanceCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
     end
 
     -- Sort fuzzy matches by score (lower = better match)
@@ -1234,6 +1426,31 @@ local function CreateResultButton(parent, index)
             ToggleCharacter("ReputationFrame")
             return
         end
+        if self.entry.entryType == TYPE_ADDON then
+            local entry = self.entry
+            if entry.enabled then
+                C_AddOns.DisableAddOn(entry.addonName)
+                entry.enabled = false
+                print("|cff00ff00Wofi:|r |cffff6666" .. entry.name .. "|r disabled — /reload to apply")
+            else
+                C_AddOns.EnableAddOn(entry.addonName)
+                entry.enabled = true
+                print("|cff00ff00Wofi:|r |cff66ff66" .. entry.name .. "|r enabled — /reload to apply")
+            end
+            -- Refresh results in-place so the tag updates immediately
+            addon:UpdateResults()
+            return
+        end
+        if self.entry.entryType == TYPE_INSTANCE then
+            WofiFrame:Hide()
+            addon:ShowLootBrowser(self.entry.instanceKey, nil)
+            return
+        end
+        if self.entry.entryType == TYPE_BOSS then
+            WofiFrame:Hide()
+            addon:ShowLootBrowser(self.entry.instanceKey, self.entry.bossIndex)
+            return
+        end
         if WofiFrame:IsShown() then
             WofiFrame:Hide()
         end
@@ -1331,6 +1548,25 @@ local function CreateResultButton(parent, index)
                 if self.entry.maximum and self.entry.maximum > 0 then
                     GameTooltip:AddLine(FormatNumber(self.entry.current) .. " / " .. FormatNumber(self.entry.maximum), 0.8, 0.8, 0.8)
                 end
+            elseif self.entry.entryType == TYPE_ADDON then
+                GameTooltip:SetText(self.entry.name, 1, 1, 1)
+                if self.entry.notes and self.entry.notes ~= "" then
+                    GameTooltip:AddLine(self.entry.notes, 0.8, 0.8, 0.8, true)
+                end
+                if self.entry.loaded then
+                    GameTooltip:AddLine("Currently loaded", 0.4, 1.0, 0.4)
+                elseif self.entry.enabled then
+                    GameTooltip:AddLine("Enabled (not loaded)", 1.0, 0.82, 0)
+                else
+                    GameTooltip:AddLine("Disabled", 0.5, 0.5, 0.5)
+                end
+            elseif self.entry.entryType == TYPE_INSTANCE then
+                local label = self.entry.isDungeon and "Dungeon" or "Raid"
+                GameTooltip:SetText(self.entry.name, 1, 0.82, 0)
+                GameTooltip:AddLine(label, 0.5, 0.5, 1)
+            elseif self.entry.entryType == TYPE_BOSS then
+                GameTooltip:SetText(self.entry.name, 1, 0.82, 0)
+                GameTooltip:AddLine(self.entry.instanceName, 0.7, 0.7, 0.7)
             end
             GameTooltip:AddLine(" ")
             if self.entry.entryType == TYPE_TRADESKILL then
@@ -1345,6 +1581,14 @@ local function CreateResultButton(parent, index)
                 GameTooltip:AddLine("Left-click to show on map", 0.5, 0.8, 1)
             elseif self.entry.entryType == TYPE_REPUTATION then
                 GameTooltip:AddLine("Left-click to open reputation panel", 0.5, 0.8, 1)
+            elseif self.entry.entryType == TYPE_ADDON then
+                if self.entry.enabled then
+                    GameTooltip:AddLine("Left-click to disable", 1.0, 0.5, 0.5)
+                else
+                    GameTooltip:AddLine("Left-click to enable", 0.5, 1.0, 0.5)
+                end
+            elseif self.entry.entryType == TYPE_INSTANCE or self.entry.entryType == TYPE_BOSS then
+                GameTooltip:AddLine("Left-click to browse loot", 0.5, 0.8, 1)
             elseif self.entry.entryType == TYPE_MACRO then
                 GameTooltip:AddLine("Left-click to run, Right-drag to action bar", 0.5, 0.8, 1)
             else
@@ -1657,6 +1901,40 @@ function addon:UpdateResults()
                 end
                 btn.typeText:SetText("[" .. tag .. "]")
                 btn.typeText:SetTextColor(r, g, b)
+            elseif entry.entryType == TYPE_ADDON then
+                btn:SetAttribute("type", "")
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
+                if entry.enabled then
+                    btn.typeText:SetText("[enabled]")
+                    btn.typeText:SetTextColor(0.4, 1.0, 0.4)
+                else
+                    btn.typeText:SetText("[disabled]")
+                    btn.typeText:SetTextColor(0.5, 0.5, 0.5)
+                end
+            elseif entry.entryType == TYPE_INSTANCE then
+                btn:SetAttribute("type", "")
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
+                if entry.isDungeon then
+                    btn.typeText:SetText("[dungeon]")
+                    btn.typeText:SetTextColor(0.4, 0.8, 1.0)
+                else
+                    btn.typeText:SetText("[raid]")
+                    btn.typeText:SetTextColor(0.8, 0.5, 1.0)
+                end
+            elseif entry.entryType == TYPE_BOSS then
+                btn:SetAttribute("type", "")
+                btn:SetAttribute("spell", nil)
+                btn:SetAttribute("item", nil)
+                btn:SetAttribute("macro", nil)
+                if entry.displayID then
+                    SetPortraitTextureFromCreatureDisplayID(btn.icon, entry.displayID)
+                end
+                btn.typeText:SetText("[" .. entry.instanceName .. "]")
+                btn.typeText:SetTextColor(0.6, 0.6, 0.6)
             end
 
             btn:Show()
@@ -1820,6 +2098,20 @@ local function RegisterSettings()
             if value and not reputationCacheBuilt then BuildReputationCache() end
         end)
 
+    AddCheckbox("includeAddons", "Installed addons",
+        "Include installed addons in search results. Click to enable/disable.",
+        function(value)
+            if value and not addonCacheBuilt then BuildAddonCache() end
+        end)
+
+    AddCheckbox("includeInstances", "Instances & bosses",
+        "Include dungeon/raid instances and bosses in search results. Requires AtlasLoot.",
+        function(value)
+            if value and not instanceCacheBuilt and IsAtlasLootAvailable() then
+                BuildInstanceCache()
+            end
+        end)
+
     AddCheckbox("allSpellRanks", "Show all spell ranks",
         "Show every rank of each spell instead of only the highest.",
         function() BuildSpellCache() end)
@@ -1945,12 +2237,15 @@ local function RegisterSettings()
                 local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
                 local questCount  = WofiDB.includeQuests      and #questCache      or 0
                 local repCount    = WofiDB.includeReputations and #reputationCache or 0
+                local addonCount  = WofiDB.includeAddons      and #addonCache      or 0
+                local instCount   = WofiDB.includeInstances   and #instanceCache   or 0
                 frame.statsLabel:SetText(
                     #spellCache .. " spells, " .. itemCount .. " items, " ..
                     macroCount .. " macros, " .. tradeCount .. " recipes, " ..
                     playerCount .. " players, " .. zoneCount .. " zones, " ..
                     lockCount .. " lockouts, " .. questCount .. " quests, " ..
-                    repCount .. " reps")
+                    repCount .. " reps, " .. addonCount .. " addons, " ..
+                    instCount .. " instances/bosses")
             end)
         end
 
@@ -1964,12 +2259,15 @@ local function RegisterSettings()
         local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
         local questCount  = WofiDB.includeQuests      and #questCache      or 0
         local repCount    = WofiDB.includeReputations and #reputationCache or 0
+        local addonCount  = WofiDB.includeAddons      and #addonCache      or 0
+        local instCount   = WofiDB.includeInstances   and #instanceCache   or 0
         frame.statsLabel:SetText(
             #spellCache .. " spells, " .. itemCount .. " items, " ..
             macroCount .. " macros, " .. tradeCount .. " recipes, " ..
             playerCount .. " players, " .. zoneCount .. " zones, " ..
             lockCount .. " lockouts, " .. questCount .. " quests, " ..
-            repCount .. " reps")
+            repCount .. " reps, " .. addonCount .. " addons, " ..
+            instCount .. " instances/bosses")
     end
     layout:AddInitializer(cacheInit)
 
@@ -2761,6 +3059,369 @@ function addon:ShowTradeskillPopup(entry)
 end
 
 -- ============================================================================
+-- Loot Browser (AtlasLoot integration)
+-- ============================================================================
+
+local LOOT_BROWSER_WIDTH = 690
+local LOOT_BROWSER_HEIGHT = 750
+local LOOT_ITEM_HEIGHT = 26
+local LOOT_ITEMS_PER_ROW = 3
+local LOOT_ITEM_WIDTH = 215
+
+-- Item frame pool for the loot browser
+local lootItemPool = {}
+local lootItemPoolUsed = 0
+local lootBossHeaders = {}
+local lootBossHeadersUsed = 0
+
+local function GetOrCreateLootItem(parent)
+    lootItemPoolUsed = lootItemPoolUsed + 1
+    if lootItemPool[lootItemPoolUsed] then
+        local f = lootItemPool[lootItemPoolUsed]
+        f:SetParent(parent)
+        f:Show()
+        return f
+    end
+
+    local f = CreateFrame("Frame", nil, parent)
+    f:SetSize(LOOT_ITEM_WIDTH, LOOT_ITEM_HEIGHT)
+
+    f.icon = f:CreateTexture(nil, "ARTWORK")
+    f.icon:SetSize(20, 20)
+    f.icon:SetPoint("LEFT", 2, 0)
+
+    f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    f.text:SetPoint("LEFT", f.icon, "RIGHT", 4, 0)
+    f.text:SetPoint("RIGHT", -2, 0)
+    f.text:SetJustifyH("LEFT")
+    f.text:SetWordWrap(false)
+
+    f:EnableMouse(true)
+    f:SetScript("OnEnter", function(self)
+        if self.itemLink then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetHyperlink(self.itemLink)
+            GameTooltip:Show()
+        end
+    end)
+    f:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    f:SetScript("OnMouseUp", function(self, button)
+        if button == "LeftButton" and IsShiftKeyDown() and self.itemLink then
+            ChatEdit_InsertLink(self.itemLink)
+        end
+    end)
+
+    lootItemPool[lootItemPoolUsed] = f
+    return f
+end
+
+local function GetOrCreateBossHeader(parent)
+    lootBossHeadersUsed = lootBossHeadersUsed + 1
+    if lootBossHeaders[lootBossHeadersUsed] then
+        local h = lootBossHeaders[lootBossHeadersUsed]
+        h:SetParent(parent)
+        h:Show()
+        return h
+    end
+
+    local h = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    h:SetJustifyH("LEFT")
+    h:SetTextColor(1, 0.82, 0)
+    lootBossHeaders[lootBossHeadersUsed] = h
+    return h
+end
+
+local function HidePooledFrames()
+    for i = 1, lootItemPoolUsed do
+        lootItemPool[i]:Hide()
+        lootItemPool[i].itemLink = nil
+    end
+    lootItemPoolUsed = 0
+    for i = 1, lootBossHeadersUsed do
+        lootBossHeaders[i]:Hide()
+    end
+    lootBossHeadersUsed = 0
+end
+
+local function PopulateLootBrowser(instanceKey, difficulty, scrollToBossIndex)
+    if not lootBrowserFrame then return end
+    if not IsAtlasLootAvailable() then return end
+
+    local moduleData = AtlasLoot.ItemDB:Get(ATLASLOOT_MODULE)
+    if not moduleData then return end
+
+    local instData = moduleData[instanceKey]
+    if not instData or not instData.items then return end
+
+    local scrollChild = lootBrowserFrame.scrollChild
+    HidePooledFrames()
+
+    local yOffset = -4
+    local bossYPositions = {}
+
+    for bossIndex, bossData in ipairs(instData.items) do
+        if type(bossData) == "table" and bossData.name then
+            local bossName = bossData.name:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+
+            -- Boss header
+            local header = GetOrCreateBossHeader(scrollChild)
+            header:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 8, yOffset)
+            header:SetPoint("RIGHT", scrollChild, "RIGHT", -8, 0)
+            header:SetText(bossName)
+            bossYPositions[bossIndex] = yOffset
+            yOffset = yOffset - 20
+
+            -- Get loot for this difficulty
+            local lootTable = bossData[difficulty]
+            if lootTable and #lootTable > 0 then
+                local col = 0
+                for _, lootEntry in ipairs(lootTable) do
+                    if type(lootEntry) == "table" and type(lootEntry[2]) == "number" and lootEntry[2] > 0 then
+                        local itemID = lootEntry[2]
+                        local itemFrame = GetOrCreateLootItem(scrollChild)
+                        local xPos = 8 + col * LOOT_ITEM_WIDTH
+                        itemFrame:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", xPos, yOffset)
+
+                        -- GetItemInfo triggers server cache request if not yet known;
+                        -- uncached items show as "Item #ID" and resolve on next open
+                        local itemName, itemLink, itemQuality, _, _, _, _, _, _, itemTexture = GetItemInfo(itemID)
+                        if itemName then
+                            itemFrame.icon:SetTexture(itemTexture)
+                            local r, g, b = GetItemQualityColor(itemQuality or 1)
+                            itemFrame.text:SetText(itemName)
+                            itemFrame.text:SetTextColor(r, g, b)
+                            itemFrame.itemLink = itemLink
+                        else
+                            itemFrame.icon:SetTexture(134400)  -- question mark
+                            itemFrame.text:SetText("Item #" .. itemID)
+                            itemFrame.text:SetTextColor(0.5, 0.5, 0.5)
+                            itemFrame.itemLink = nil
+                        end
+
+                        col = col + 1
+                        if col >= LOOT_ITEMS_PER_ROW then
+                            col = 0
+                            yOffset = yOffset - LOOT_ITEM_HEIGHT
+                        end
+                    end
+                end
+                -- Finish partial row
+                if col > 0 then
+                    yOffset = yOffset - LOOT_ITEM_HEIGHT
+                end
+            else
+                -- No loot for this difficulty
+                local noLoot = GetOrCreateBossHeader(scrollChild)
+                noLoot:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 16, yOffset)
+                noLoot:SetText("No loot data for this difficulty")
+                noLoot:SetTextColor(0.5, 0.5, 0.5)
+                yOffset = yOffset - 16
+            end
+
+            -- Spacing between bosses
+            yOffset = yOffset - 10
+        end
+    end
+
+    scrollChild:SetHeight(math.abs(yOffset) + 20)
+
+    -- Scroll to specific boss if requested
+    if scrollToBossIndex and bossYPositions[scrollToBossIndex] then
+        local scrollMax = lootBrowserFrame.scrollFrame:GetVerticalScrollRange()
+        local targetScroll = math.abs(bossYPositions[scrollToBossIndex])
+        lootBrowserFrame.scrollFrame:SetVerticalScroll(math.min(targetScroll, scrollMax))
+    else
+        lootBrowserFrame.scrollFrame:SetVerticalScroll(0)
+    end
+end
+
+local function CreateLootBrowser()
+    if lootBrowserFrame then return end
+
+    local f = CreateFrame("Frame", "WofiLootBrowserFrame", UIParent, "BackdropTemplate")
+    f:SetSize(LOOT_BROWSER_WIDTH, LOOT_BROWSER_HEIGHT)
+    f:SetPoint("CENTER")
+    f:SetFrameStrata("DIALOG")
+    f:SetBackdrop({
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 24,
+        insets = { left = 6, right = 6, top = 6, bottom = 6 },
+    })
+    f:SetBackdropColor(0.05, 0.05, 0.1, 0.95)
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetClampedToScreen(true)
+
+    -- Title
+    f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    f.title:SetPoint("TOP", 0, -12)
+    f.title:SetTextColor(1, 0.82, 0)
+
+    -- Close button
+    local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    closeBtn:SetPoint("TOPRIGHT", -2, -2)
+
+    -- Difficulty buttons (for dungeons)
+    f.normalBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    f.normalBtn:SetSize(70, 22)
+    f.normalBtn:SetPoint("TOPLEFT", 12, -34)
+    f.normalBtn:SetText("Normal")
+    f.normalBtn:SetScript("OnClick", function()
+        f.currentDifficulty = 1
+        f.normalBtn:Disable()
+        f.heroicBtn:Enable()
+        PopulateLootBrowser(f.currentInstanceKey, 1, nil)
+    end)
+
+    f.heroicBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    f.heroicBtn:SetSize(70, 22)
+    f.heroicBtn:SetPoint("LEFT", f.normalBtn, "RIGHT", 4, 0)
+    f.heroicBtn:SetText("Heroic")
+    f.heroicBtn:SetScript("OnClick", function()
+        f.currentDifficulty = 2
+        f.heroicBtn:Disable()
+        f.normalBtn:Enable()
+        PopulateLootBrowser(f.currentInstanceKey, 2, nil)
+    end)
+
+    -- Scroll frame
+    local scrollFrame = CreateFrame("ScrollFrame", "WofiLootBrowserScroll", f, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 10, -60)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -30, 10)
+    f.scrollFrame = scrollFrame
+
+    local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+    scrollChild:SetWidth(LOOT_BROWSER_WIDTH - 42)
+    scrollChild:SetHeight(1)  -- will be set dynamically
+    scrollFrame:SetScrollChild(scrollChild)
+    f.scrollChild = scrollChild
+
+    -- Escape to close
+    table.insert(UISpecialFrames, "WofiLootBrowserFrame")
+
+    -- Auto-refresh when item data arrives from server so placeholders resolve
+    local refreshTimer = nil
+    local itemEventFrame = CreateFrame("Frame")
+    itemEventFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+    itemEventFrame:SetScript("OnEvent", function()
+        if not f:IsShown() then return end
+        if refreshTimer then return end
+        refreshTimer = C_Timer.After(0.05, function()
+            refreshTimer = nil
+            if f:IsShown() and f.currentInstanceKey then
+                local scrollPos = f.scrollFrame:GetVerticalScroll()
+                PopulateLootBrowser(f.currentInstanceKey, f.currentDifficulty, nil)
+                C_Timer.After(0, function()
+                    local maxScroll = f.scrollFrame:GetVerticalScrollRange()
+                    f.scrollFrame:SetVerticalScroll(math.min(scrollPos, maxScroll))
+                end)
+            end
+        end)
+    end)
+
+    f:Hide()
+    lootBrowserFrame = f
+end
+
+function addon:ShowLootBrowser(instanceKey, scrollToBossIndex)
+    if not IsAtlasLootAvailable() then
+        print("|cff00ff00Wofi:|r AtlasLoot is required for the loot browser.")
+        return
+    end
+
+    -- Ensure module is loaded
+    local moduleData = AtlasLoot.ItemDB:Get(ATLASLOOT_MODULE)
+    if not moduleData then
+        -- Try loading on demand
+        if AtlasLoot.Loader and AtlasLoot.Loader.LoadModule then
+            AtlasLoot.Loader:LoadModule(ATLASLOOT_MODULE, function()
+                atlasLootModuleLoaded = true
+                if not instanceCacheBuilt then BuildInstanceCache() end
+                addon:ShowLootBrowser(instanceKey, scrollToBossIndex)
+            end)
+        else
+            print("|cff00ff00Wofi:|r Could not load AtlasLoot data module.")
+        end
+        return
+    end
+
+    local instData = moduleData[instanceKey]
+    if not instData then
+        print("|cff00ff00Wofi:|r Instance data not found: " .. tostring(instanceKey))
+        return
+    end
+
+    CreateLootBrowser()
+
+    -- Resolve display name
+    local instName = instanceKey
+    if instData.GetName then
+        local raw = instData:GetName()
+        if raw then
+            instName = raw:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+        end
+    end
+    if instName == "" or instName == "UNKNOWN" then
+        instName = C_Map.GetAreaInfo(instData.MapID) or instanceKey
+    end
+    lootBrowserFrame.title:SetText(instName)
+    lootBrowserFrame.currentInstanceKey = instanceKey
+
+    -- Discover available difficulty keys (numeric keys with table values = loot arrays)
+    local availDiffs = {}
+    for _, bossData in ipairs(instData.items) do
+        if type(bossData) == "table" then
+            for k, v in pairs(bossData) do
+                if type(k) == "number" and k > 0 and type(v) == "table" then
+                    availDiffs[k] = true
+                end
+            end
+        end
+    end
+    local diffKeys = {}
+    for k in pairs(availDiffs) do table.insert(diffKeys, k) end
+    table.sort(diffKeys)
+
+    if #diffKeys >= 2 then
+        lootBrowserFrame.normalBtn:Show()
+        lootBrowserFrame.heroicBtn:Show()
+        lootBrowserFrame.diffKey1 = diffKeys[1]
+        lootBrowserFrame.diffKey2 = diffKeys[2]
+        lootBrowserFrame.normalBtn:SetScript("OnClick", function()
+            lootBrowserFrame.currentDifficulty = lootBrowserFrame.diffKey1
+            lootBrowserFrame.normalBtn:Disable()
+            lootBrowserFrame.heroicBtn:Enable()
+            PopulateLootBrowser(lootBrowserFrame.currentInstanceKey, lootBrowserFrame.diffKey1, nil)
+        end)
+        lootBrowserFrame.heroicBtn:SetScript("OnClick", function()
+            lootBrowserFrame.currentDifficulty = lootBrowserFrame.diffKey2
+            lootBrowserFrame.heroicBtn:Disable()
+            lootBrowserFrame.normalBtn:Enable()
+            PopulateLootBrowser(lootBrowserFrame.currentInstanceKey, lootBrowserFrame.diffKey2, nil)
+        end)
+        lootBrowserFrame.normalBtn:Disable()
+        lootBrowserFrame.heroicBtn:Enable()
+        lootBrowserFrame.scrollFrame:SetPoint("TOPLEFT", 10, -60)
+    else
+        lootBrowserFrame.normalBtn:Hide()
+        lootBrowserFrame.heroicBtn:Hide()
+        lootBrowserFrame.scrollFrame:SetPoint("TOPLEFT", 10, -38)
+    end
+
+    local defaultDiff = diffKeys[1] or 1
+    lootBrowserFrame.currentDifficulty = defaultDiff
+
+    PopulateLootBrowser(instanceKey, defaultDiff, scrollToBossIndex)
+    lootBrowserFrame:Show()
+end
+
+-- ============================================================================
 -- Keybinding Support
 -- ============================================================================
 
@@ -2869,9 +3530,14 @@ function addon:Toggle()
         if WofiDB.includeZones   and not zoneCacheBuilt   then BuildZoneCache()   end
         if WofiDB.includeQuests       and not questCacheBuilt      then BuildQuestCache()      end
         if WofiDB.includeReputations  and not reputationCacheBuilt then BuildReputationCache() end
+        if WofiDB.includeAddons       and not addonCacheBuilt      then BuildAddonCache()      end
+        if WofiDB.includeInstances    and not instanceCacheBuilt   and IsAtlasLootAvailable() then BuildInstanceCache() end
         if WofiDB.includeLockouts then
             RequestRaidInfo()
             BuildLockoutCache()
+        end
+        if lootBrowserFrame and lootBrowserFrame:IsShown() then
+            lootBrowserFrame:Hide()
         end
         WofiFrame:Show()
     end
@@ -2886,6 +3552,8 @@ function addon:RefreshCache()
     if WofiDB.includeLockouts    then BuildLockoutCache()    end
     if WofiDB.includeQuests      then BuildQuestCache()      end
     if WofiDB.includeReputations then BuildReputationCache() end
+    if WofiDB.includeAddons      then BuildAddonCache()      end
+    if WofiDB.includeInstances and IsAtlasLootAvailable() then BuildInstanceCache() end
     if #tradeskillCache > 0      then RecalcTradeskillAvailability() end
     local itemCount   = WofiDB.includeItems       and #itemCache       or 0
     local macroCount  = WofiDB.includeMacros      and #macroCache      or 0
@@ -2894,11 +3562,14 @@ function addon:RefreshCache()
     local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
     local questCount  = WofiDB.includeQuests      and #questCache      or 0
     local repCount    = WofiDB.includeReputations and #reputationCache or 0
+    local addonCount  = WofiDB.includeAddons      and #addonCache      or 0
+    local instCount   = WofiDB.includeInstances   and #instanceCache   or 0
     print("|cff00ff00Wofi:|r Cache refreshed (" ..
         #spellCache .. " spells, " .. itemCount .. " items, " ..
         macroCount .. " macros, " .. playerCount .. " players, " ..
         zoneCount .. " zones, " .. lockCount .. " lockouts, " ..
-        questCount .. " quests, " .. repCount .. " reps)")
+        questCount .. " quests, " .. repCount .. " reps, " ..
+        addonCount .. " addons, " .. instCount .. " instances/bosses)")
 end
 
 -- Slash commands
@@ -3007,6 +3678,17 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
             if WofiDB.includeLockouts    then BuildLockoutCache()    end
             if WofiDB.includeQuests      then BuildQuestCache()      end
             if WofiDB.includeReputations then BuildReputationCache() end
+            if WofiDB.includeAddons      then BuildAddonCache()      end
+
+            -- AtlasLoot integration: load module then build instance cache
+            if WofiDB.includeInstances and IsAtlasLootAvailable() then
+                if AtlasLoot.Loader and AtlasLoot.Loader.LoadModule then
+                    AtlasLoot.Loader:LoadModule(ATLASLOOT_MODULE, function()
+                        atlasLootModuleLoaded = true
+                        BuildInstanceCache()
+                    end)
+                end
+            end
 
             -- Build player cache (delayed to let friend/guild data arrive)
             if WofiDB.includePlayers then
