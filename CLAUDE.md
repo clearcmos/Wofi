@@ -1,13 +1,13 @@
 # Wofi - Claude Code Instructions
 
 ## Project Overview
-Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provides a Spotlight/Rofi-style launcher for spells, items, macros, and profession recipes. Users can quickly search and cast spells, use items, run macros, craft tradeskill recipes, or search merchant inventories - all from a single keyboard-driven interface.
+Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provides a Spotlight/Rofi-style launcher for spells, items, macros, profession recipes, players, zones, instance lockouts, quests, reputations, addons, and dungeon/raid loot. Users can quickly search and cast spells, use items, run macros, craft tradeskill recipes, search merchant inventories, manage addons, or browse instance loot tables - all from a single keyboard-driven interface.
 
 ## Architecture
 
 ### Core Files
 - `Wofi.toc` - Addon manifest (Interface 20505 for Classic Anniversary)
-- `Wofi.lua` - All addon logic in a single file (~3300 lines)
+- `Wofi.lua` - All addon logic in a single file (~4200 lines)
 
 ### Key Components
 1. **Spell Cache** - Builds a searchable cache of all non-passive spells from the player's spellbook
@@ -20,14 +20,17 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 8. **Quest Cache** - Indexes active quests from the quest log; rebuilt on QUEST_LOG_UPDATE; uses Questie for map navigation (optional dependency)
 9. **Reputation Cache** - Scans all player faction standings via GetFactionInfo; expands collapsed headers to access all factions; rebuilt on UPDATE_FACTION; displays standing label and progress with comma-formatted numbers
 10. **Merchant Cache** - Built when a merchant window opens, indexes all vendor items for search
-11. **Search UI** - Minimalist popup with EditBox for typing and results frame
+11. **Addon Cache** - Scans all installed addons via C_AddOns API; includes name, title, notes, enabled/loaded state; click toggles enable/disable
+12. **Instance/Boss Cache** - Indexes dungeon/raid instances and boss encounters from AtlasLoot (optional dependency); pre-caches item data for loot browser
+13. **Search UI** - Minimalist popup with EditBox for typing and results frame
 12. **SecureActionButtons** - Result buttons use SecureActionButtonTemplate for spells (`type="spell"`), items (`type="item"`), and macros (`type="macro"`)
 13. **Tradeskill Craft Popup** - Quantity input with reagent display, live bag counts, MAX button, and secure create button
 14. **Merchant Search Overlay** - Search bar that appears on merchant windows with buy/quantity functionality
 15. **Craft Progress Alert** - Center-screen notification showing remaining craft count with fade animations and cancel detection
 16. **Keybind System** - Custom keybind stored in SavedVariables, applied via SetBindingClick on a macro button
-17. **Config GUI** - Options panel for settings (opened via `/wofi config`)
-18. **Welcome Screen** - First-run setup dialog shown on initial install
+17. **Loot Browser** - Full-featured AtlasLoot-powered instance loot viewer with scroll frame, difficulty buttons (Normal/Heroic), expandable tier set sections grouped by class with spec labels, async item resolution via GET_ITEM_INFO_RECEIVED, Shift-click to link items in chat
+18. **Config GUI** - Options panel for settings (opened via `/wofi config`)
+19. **Welcome Screen** - First-run setup dialog shown on initial install
 
 ### WoW API Constraints
 - **Spell/item usage requires SecureActionButtonTemplate** - Cannot call CastSpell() or UseItem() directly
@@ -53,6 +56,8 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 - `includeLockouts` (boolean) - Whether to include instance lockouts (raids/heroics) in search results
 - `includeQuests` (boolean) - Whether to include active quests in search results (requires Questie)
 - `includeReputations` (boolean) - Whether to include player reputations in search results
+- `includeAddons` (boolean) - Whether to include installed addons in search results
+- `includeInstances` (boolean) - Whether to include dungeon/raid instances and bosses in search results (requires AtlasLoot)
 - `welcomeShown` (boolean) - Whether the first-run welcome screen has been shown
 - `tradeskillCache` (table) - Persisted recipe data across sessions for all scanned professions
 
@@ -67,6 +72,9 @@ Each search result has an `entryType` field:
 - `"lockout"` - Saved instance (raid/heroic), opens Raid Info panel via `ToggleFriendsFrame(4)` on click; reset timer computed live from stored `expiresAt` timestamp
 - `"quest"` - Active quest (requires Questie), selects quest log entry and opens World Map; uses Questie API for zone navigation
 - `"reputation"` - Player faction reputation, opens Reputation panel via `ToggleCharacter("ReputationFrame")` on click; displays standing label color-coded with `FACTION_BAR_COLORS` and comma-formatted progress (e.g., `[Honored 5,000/12,000]`)
+- `"addon"` - Installed addon, click toggles enable/disable via `C_AddOns.EnableAddOn`/`C_AddOns.DisableAddOn`; shows `[enabled]` or `[disabled]` tag; prints reload message
+- `"instance"` - Dungeon/raid instance (AtlasLoot), click opens loot browser; shows `[dungeon]` or `[raid]` tag
+- `"boss"` - Boss encounter within an instance (AtlasLoot), click opens loot browser scrolled to that boss; shows `[instanceName]` tag
 
 ## Slash Commands
 - `/wofi` - Toggle launcher
@@ -118,13 +126,18 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 - Cancel detection: monitors `UnitCastingInfo` and `GetTradeskillRepeatCount` to distinguish completion from cancellation
 - Merchant search debounces rebuilds via `C_Timer.NewTimer(0.1, ...)` on `MERCHANT_UPDATE`
 - GreenWall integration (optional, listed in TOC as `OptionalDeps: GreenWall`): hooks `gw.ReplicateMessage` on login to capture co-guild member names as they chat, also seeds from `gw.config.comember_cache` 5s after login; co-guild members appear with `[coguild]` tag
+- Addon results show `[enabled]` or `[disabled]` tag; clicking toggles state via `C_AddOns.EnableAddOn`/`C_AddOns.DisableAddOn` and prints reload message; live state queried from API on each display
+- Instance results show `[dungeon]` (cyan) or `[raid]` (purple) tag; clicking opens the loot browser
+- Boss results show `[instanceName]` tag in grey; clicking opens loot browser scrolled to that boss; creature portrait displayed via `SetPortraitTextureFromCreatureDisplayID` when available
+- Loot browser uses object pooling for item frames and boss headers; expand/collapse state resets when switching instances; tier set sections grouped by class with spec labels derived from set name suffixes
+- AtlasLoot integration (optional, listed in TOC as `OptionalDeps: AtlasLootClassic`): loads `AtlasLootClassic_DungeonsAndRaids` module on demand via `AtlasLoot.Loader:LoadModule`; item data pre-cached at login for async resolution
 
 ## Config GUI
 The config panel (`/wofi config`) uses the native Settings API (ESC > Options > AddOns > Wofi):
-- **Search section**: Checkboxes for include items, include macros, include tradeskills, include players, include zones, include lockouts, include quests (requires Questie), include reputations, show all spell ranks
+- **Search section**: Checkboxes for include items, include macros, include tradeskills, include players, include zones, include lockouts, include quests (requires Questie), include reputations, include addons, include instances & bosses (requires AtlasLoot), show all spell ranks
 - **Display section**: Max results slider (4-12), show craft progress notification, show merchant search bar
 - **Keybind section**: Current binding display, Set/Clear buttons
-- **Cache section**: Refresh caches button, cache stats display (spell/item/macro/recipe/player/zone/lockout/quest/reputation counts)
+- **Cache section**: Refresh caches button, cache stats display (spell/item/macro/recipe/player/zone/lockout/quest/reputation/addon/instance+boss counts)
 
 ## Development Workflow
 
@@ -189,6 +202,14 @@ This creates `~/Wofi-x.x.x.zip` containing a `Wofi/` folder with the addon files
 32. Hover reputation result - verify tooltip shows standing label and progress
 33. Click/Enter a reputation result - verify Reputation panel opens
 34. Gain reputation - verify cache updates (UPDATE_FACTION event)
+35. Search for an addon name (e.g., "Questie") - verify `[enabled]` or `[disabled]` tag
+36. Click/Enter an addon result - verify it toggles enabled/disabled and prints reload message
+37. Search for an instance name (e.g., "Karazhan") - verify `[dungeon]` or `[raid]` tag
+38. Click/Enter an instance result - verify loot browser opens with boss loot
+39. Search for a boss name - verify `[instanceName]` tag, click opens loot browser scrolled to boss
+40. In loot browser - verify Normal/Heroic difficulty buttons work for dungeons with multiple difficulties
+41. In loot browser - verify tier set class rows expand/collapse, and state resets when switching instances
+42. In loot browser - Shift-click an item to verify it links in chat
 
 ## WoW API Reference
 

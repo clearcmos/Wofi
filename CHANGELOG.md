@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.0
+
+### Added
+- **Addon manager** - Search installed addons, click to enable/disable
+- **Loot browser** - Browse dungeon/raid loot tables with difficulty selection and expandable tier set groups (requires AtlasLoot)
+- Documentation updated for addon manager and loot browser features
+
+### Fixed
+- Loot browser expand/collapse state no longer persists across different instances
+- Performance: replaced `math.*` and `table.*` calls with pre-localized WoW globals
+- Removed dead variable and identical ternary branch in instance cache
+
 ## v1.1.1
 
 ### Added

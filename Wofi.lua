@@ -55,6 +55,8 @@ local playerCacheRebuildTimer = nil
 -- Note: C_Container functions must be called as C_Container.X() — they are not
 -- populated as globals and are not ready at file-scope load time.
 local GetTradeskillRepeatCount = _G.GetTradeskillRepeatCount
+local rad = math.rad
+local HUGE = math.huge
 
 -- Main frame
 local WofiFrame
@@ -308,7 +310,7 @@ local function BuildSpellCache()
             if spellName and not IsPassiveSpell(slot, BOOKTYPE_SPELL) then
                 local spellTexture = GetSpellTexture(slot, BOOKTYPE_SPELL)
                 local _, spellID = GetSpellBookItemInfo(slot, BOOKTYPE_SPELL)
-                table.insert(spellCache, {
+                tinsert(spellCache, {
                     entryType = TYPE_SPELL,
                     name = spellName,
                     subName = subSpellName or "",
@@ -322,7 +324,7 @@ local function BuildSpellCache()
     end
 
     -- Sort alphabetically, then by rank descending (highest first) for same-name spells
-    table.sort(spellCache, function(a, b)
+    sort(spellCache, function(a, b)
         if a.name == b.name then
             return a.slot > b.slot -- higher slot = higher rank
         end
@@ -367,7 +369,7 @@ local function BuildItemCache()
                     local itemName, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(info.itemID)
                     if itemName then
                         seenIDs[info.itemID] = true
-                        table.insert(itemCache, {
+                        tinsert(itemCache, {
                             entryType = TYPE_ITEM,
                             name = itemName,
                             itemID = info.itemID,
@@ -383,7 +385,7 @@ local function BuildItemCache()
     end
 
     -- Sort alphabetically
-    table.sort(itemCache, function(a, b) return a.name < b.name end)
+    sort(itemCache, function(a, b) return a.name < b.name end)
     itemCacheBuilt = true
 end
 
@@ -403,7 +405,7 @@ local function BuildMacroCache()
     for i = 1, numAccount do
         local name, iconTexture, body = GetMacroInfo(i)
         if name and name ~= "" then
-            table.insert(macroCache, {
+            tinsert(macroCache, {
                 entryType = TYPE_MACRO,
                 name = name,
                 macroIndex = i,
@@ -419,7 +421,7 @@ local function BuildMacroCache()
         local idx = MAX_ACCOUNT_MACROS + i
         local name, iconTexture, body = GetMacroInfo(idx)
         if name and name ~= "" then
-            table.insert(macroCache, {
+            tinsert(macroCache, {
                 entryType = TYPE_MACRO,
                 name = name,
                 macroIndex = idx,
@@ -431,7 +433,7 @@ local function BuildMacroCache()
     end
 
     -- Sort alphabetically
-    table.sort(macroCache, function(a, b) return a.name < b.name end)
+    sort(macroCache, function(a, b) return a.name < b.name end)
     macroCacheBuilt = true
 end
 
@@ -505,7 +507,7 @@ BuildPlayerCache = function()
             level = level,
             zone = zone,
         }
-        table.insert(playerCache, entry)
+        tinsert(playerCache, entry)
         seen[name] = { entry = entry, sourcePriority = source }
     end
 
@@ -574,7 +576,7 @@ BuildPlayerCache = function()
         AddPlayer(name, PLAYER_SOURCE_RECENT, data.class, data.classUpper, data.level, data.zone)
     end
 
-    table.sort(playerCache, function(a, b) return a.name < b.name end)
+    sort(playerCache, function(a, b) return a.name < b.name end)
     playerCacheBuilt = true
 end
 
@@ -599,7 +601,7 @@ local function TrackRecentPlayer(name, class, classUpper, level, zone)
 
     -- Trim to MAX_RECENT_PLAYERS (evict oldest)
     if recentPlayerCount > MAX_RECENT_PLAYERS then
-        local oldestName, oldestTime = nil, math.huge
+        local oldestName, oldestTime = nil, HUGE
         for n, data in pairs(recentPlayers) do
             if data.timestamp < oldestTime then
                 oldestName = n
@@ -637,13 +639,13 @@ local function BuildZoneCache()
     for _, child in ipairs(rootChildren) do
         if child.mapType == Enum.UIMapType.Continent then
             -- direct continent under root
-            table.insert(continentIDs, { mapID = child.mapID, name = child.name })
+            tinsert(continentIDs, { mapID = child.mapID, name = child.name })
         elseif child.mapType == Enum.UIMapType.World then
             -- world node between root and continents (e.g. "Azeroth")
             local worldChildren = C_Map.GetMapChildrenInfo(child.mapID) or {}
             for _, wchild in ipairs(worldChildren) do
                 if wchild.mapType == Enum.UIMapType.Continent then
-                    table.insert(continentIDs, { mapID = wchild.mapID, name = wchild.name })
+                    tinsert(continentIDs, { mapID = wchild.mapID, name = wchild.name })
                 end
             end
         end
@@ -653,7 +655,7 @@ local function BuildZoneCache()
         local zones = C_Map.GetMapChildrenInfo(cont.mapID, Enum.UIMapType.Zone, false) or {}
         for _, zone in ipairs(zones) do
             if zone.name and zone.name ~= "" then
-                table.insert(zoneCache, {
+                tinsert(zoneCache, {
                     entryType  = TYPE_MAP,
                     name       = zone.name,
                     nameLower  = zone.name:lower(),
@@ -664,7 +666,7 @@ local function BuildZoneCache()
             end
         end
     end
-    table.sort(zoneCache, function(a, b) return a.name < b.name end)
+    sort(zoneCache, function(a, b) return a.name < b.name end)
     zoneCacheBuilt = true
 end
 
@@ -681,7 +683,7 @@ local function BuildReputationCache()
     while i <= GetNumFactions() do
         local name, _, _, _, _, _, _, _, isHeader, isCollapsed = GetFactionInfo(i)
         if isHeader and isCollapsed then
-            table.insert(collapsed, name)
+            tinsert(collapsed, name)
             ExpandFactionHeader(i)
         end
         i = i + 1
@@ -696,7 +698,7 @@ local function BuildReputationCache()
             local current = barValue - barMin
             local maximum = barMax - barMin
             local color = FACTION_BAR_COLORS and FACTION_BAR_COLORS[standingID]
-            table.insert(reputationCache, {
+            tinsert(reputationCache, {
                 entryType     = TYPE_REPUTATION,
                 name          = name,
                 nameLower     = name:lower(),
@@ -723,7 +725,7 @@ local function BuildReputationCache()
         end
     end
 
-    table.sort(reputationCache, function(a, b) return a.name < b.name end)
+    sort(reputationCache, function(a, b) return a.name < b.name end)
     reputationCacheBuilt = true
 end
 
@@ -738,11 +740,11 @@ local function BuildAddonCache()
     for i = 1, numAddons do
         local name, title, notes, loadable, reason, security = C_AddOns.GetAddOnInfo(i)
         if name then
-            local enabled = C_AddOns.GetAddOnEnableState(i) > 0
+            local enabled = C_AddOns.GetAddOnEnableState(i, UnitName("player")) > 0
             local displayName = title and title ~= "" and title or name
             -- Strip color codes from title for clean display/search
             local cleanName = displayName:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-            table.insert(addonCache, {
+            tinsert(addonCache, {
                 entryType   = TYPE_ADDON,
                 name        = cleanName,
                 nameLower   = cleanName:lower(),
@@ -757,7 +759,7 @@ local function BuildAddonCache()
         end
     end
 
-    table.sort(addonCache, function(a, b) return a.name < b.name end)
+    sort(addonCache, function(a, b) return a.name < b.name end)
     addonCacheBuilt = true
 end
 
@@ -766,7 +768,6 @@ end
 -- ============================================================================
 
 local ATLASLOOT_MODULE = "AtlasLootClassic_DungeonsAndRaids"
-local atlasLootModuleLoaded = false
 
 local function BuildInstanceCache()
     wipe(instanceCache)
@@ -821,15 +822,15 @@ local function BuildInstanceCache()
             end
             local diffList = {}
             for k in pairs(difficulties) do
-                table.insert(diffList, k)
+                tinsert(diffList, k)
             end
-            table.sort(diffList)
+            sort(diffList)
 
             -- Instance icon: use a dungeon/raid texture
-            local instTexture = isDungeon and 136333 or 136333  -- INV_Misc_Map_01
+            local instTexture = 136333  -- INV_Misc_Map_01
 
             -- Add instance entry
-            table.insert(instanceCache, {
+            tinsert(instanceCache, {
                 entryType    = TYPE_INSTANCE,
                 name         = instName,
                 nameLower    = instName:lower(),
@@ -852,7 +853,7 @@ local function BuildInstanceCache()
                         if bossData.DisplayIDs and bossData.DisplayIDs[1] and bossData.DisplayIDs[1][1] then
                             displayID = bossData.DisplayIDs[1][1]
                         end
-                        table.insert(instanceCache, {
+                        tinsert(instanceCache, {
                             entryType    = TYPE_BOSS,
                             name         = bossName,
                             nameLower    = bossName:lower(),
@@ -887,7 +888,7 @@ local function BuildInstanceCache()
         end
     end
 
-    table.sort(instanceCache, function(a, b)
+    sort(instanceCache, function(a, b)
         if a.entryType ~= b.entryType then
             return a.entryType < b.entryType  -- bosses and instances grouped
         end
@@ -906,16 +907,16 @@ local function FormatNumber(n)
     if pos == 0 then pos = 3 end
     local parts = { s:sub(1, pos) }
     for i = pos + 1, #s, 3 do
-        table.insert(parts, s:sub(i, i + 2))
+        tinsert(parts, s:sub(i, i + 2))
     end
     return table.concat(parts, ",")
 end
 
 local function FormatResetTime(seconds)
     if seconds <= 0 then return "expired" end
-    local d = math.floor(seconds / 86400)
-    local h = math.floor((seconds % 86400) / 3600)
-    local m = math.floor((seconds % 3600) / 60)
+    local d = floor(seconds / 86400)
+    local h = floor((seconds % 86400) / 3600)
+    local m = floor((seconds % 3600) / 60)
     if d > 0 then return d .. "d " .. h .. "h"
     elseif h > 0 then return h .. "h " .. m .. "m"
     else return m .. "m" end
@@ -930,7 +931,7 @@ local function BuildLockoutCache()
               numEncounters, progress = GetSavedInstanceInfo(i)
         if name then
             local texture = 135736  -- Spell_Arcane_Blink
-            table.insert(lockoutCache, {
+            tinsert(lockoutCache, {
                 entryType      = TYPE_LOCKOUT,
                 name           = name,
                 nameLower      = name:lower(),
@@ -960,7 +961,7 @@ local function BuildQuestCache()
         if title and not isHeader then
             local _, itemTexture = GetQuestLogSpecialItemInfo(i)
             local complete = isComplete and isComplete ~= 0
-            table.insert(questCache, {
+            tinsert(questCache, {
                 entryType     = TYPE_QUEST,
                 name          = title,
                 nameLower     = title:lower(),
@@ -1013,21 +1014,22 @@ end
 
 -- Reusable search buckets (avoid table allocation on every keystroke)
 local searchExact, searchStart, searchContains, searchFuzzy = {}, {}, {}, {}
+local searchResults = {}
 
 -- Match entries from a cache into the four priority buckets
 local function MatchEntries(cache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
     local queryLen = #queryLower
     for _, entry in ipairs(cache) do
         if entry.nameLower == queryLower then
-            table.insert(exactMatches, entry)
+            tinsert(exactMatches, entry)
         elseif entry.nameLower:sub(1, queryLen) == queryLower then
-            table.insert(startMatches, entry)
+            tinsert(startMatches, entry)
         elseif entry.nameLower:find(queryLower, 1, true) then
-            table.insert(containsMatches, entry)
+            tinsert(containsMatches, entry)
         else
             local score = FuzzyMatch(queryLower, entry.nameLower)
             if score then
-                table.insert(fuzzyMatches, { entry = entry, score = score })
+                tinsert(fuzzyMatches, { entry = entry, score = score })
             end
         end
     end
@@ -1035,8 +1037,8 @@ end
 
 local function Search(query)
     wipe(searchExact); wipe(searchStart); wipe(searchContains); wipe(searchFuzzy)
-    local results = {}
-    if not query or query == "" then return results end
+    wipe(searchResults)
+    if not query or query == "" then return searchResults end
 
     local queryLower = query:lower()
 
@@ -1073,24 +1075,24 @@ local function Search(query)
     end
 
     -- Sort fuzzy matches by score (lower = better match)
-    table.sort(searchFuzzy, function(a, b) return a.score < b.score end)
+    sort(searchFuzzy, function(a, b) return a.score < b.score end)
 
     -- Priority: exact > starts with > contains > fuzzy
     local maxResults = WofiDB.maxResults or 8
     for _, entry in ipairs(searchExact) do
-        if #results < maxResults then table.insert(results, entry) end
+        if #searchResults < maxResults then tinsert(searchResults, entry) end
     end
     for _, entry in ipairs(searchStart) do
-        if #results < maxResults then table.insert(results, entry) end
+        if #searchResults < maxResults then tinsert(searchResults, entry) end
     end
     for _, entry in ipairs(searchContains) do
-        if #results < maxResults then table.insert(results, entry) end
+        if #searchResults < maxResults then tinsert(searchResults, entry) end
     end
     for _, match in ipairs(searchFuzzy) do
-        if #results < maxResults then table.insert(results, match.entry) end
+        if #searchResults < maxResults then tinsert(searchResults, match.entry) end
     end
 
-    return results
+    return searchResults
 end
 
 -- ============================================================================
@@ -1106,7 +1108,7 @@ local function BuildMerchantCache()
     for i = 1, numItems do
         local name, texture, price, quantity, numAvailable, isPurchasable, isUsable, extendedCost = GetMerchantItemInfo(i)
         if name then
-            table.insert(merchantItemCache, {
+            tinsert(merchantItemCache, {
                 index = i,
                 name = name,
                 nameLower = name:lower(),
@@ -1128,14 +1130,14 @@ end
 local function FormatPrice(copper)
     if not copper or copper == 0 then return "" end
 
-    local gold = math.floor(copper / 10000)
-    local silver = math.floor((copper % 10000) / 100)
+    local gold = floor(copper / 10000)
+    local silver = floor((copper % 10000) / 100)
     local cop = copper % 100
 
     local parts = {}
-    if gold > 0 then table.insert(parts, "|cffffd700" .. gold .. "g|r") end
-    if silver > 0 then table.insert(parts, "|cffc7c7cf" .. silver .. "s|r") end
-    if cop > 0 then table.insert(parts, "|cffeda55f" .. cop .. "c|r") end
+    if gold > 0 then tinsert(parts, "|cffffd700" .. gold .. "g|r") end
+    if silver > 0 then tinsert(parts, "|cffc7c7cf" .. silver .. "s|r") end
+    if cop > 0 then tinsert(parts, "|cffeda55f" .. cop .. "c|r") end
 
     return table.concat(parts, " ")
 end
@@ -1149,20 +1151,20 @@ local function SearchMerchant(query)
 
     MatchEntries(merchantItemCache, queryLower, searchExact, searchStart, searchContains, searchFuzzy)
 
-    table.sort(searchFuzzy, function(a, b) return a.score < b.score end)
+    sort(searchFuzzy, function(a, b) return a.score < b.score end)
 
     local maxResults = WofiDB.maxResults or 8
     for _, entry in ipairs(searchExact) do
-        if #results < maxResults then table.insert(results, entry) end
+        if #results < maxResults then tinsert(results, entry) end
     end
     for _, entry in ipairs(searchStart) do
-        if #results < maxResults then table.insert(results, entry) end
+        if #results < maxResults then tinsert(results, entry) end
     end
     for _, entry in ipairs(searchContains) do
-        if #results < maxResults then table.insert(results, entry) end
+        if #results < maxResults then tinsert(results, entry) end
     end
     for _, match in ipairs(searchFuzzy) do
-        if #results < maxResults then table.insert(results, match.entry) end
+        if #results < maxResults then tinsert(results, match.entry) end
     end
 
     return results
@@ -1244,7 +1246,7 @@ local function CreateSearchIcon(parent)
     handle:SetPoint("TOPLEFT", outer, "BOTTOMRIGHT", -4, 2)
     handle:SetTexture(FLAT_TEXTURE)
     handle:SetVertexColor(iconColor[1], iconColor[2], iconColor[3], 1)
-    handle:SetRotation(math.rad(-45))
+    handle:SetRotation(rad(-45))
     container.handle = handle
 
     return container
@@ -1272,7 +1274,7 @@ end
 UpdateFadeAnimations = function(self, elapsed)
     for frame, anim in pairs(fadeAnimations) do
         anim.elapsed = anim.elapsed + elapsed
-        local progress = math.min(anim.elapsed / anim.duration, 1)
+        local progress = min(anim.elapsed / anim.duration, 1)
         -- Ease out quad for smooth deceleration
         local eased = 1 - (1 - progress) * (1 - progress)
         local alpha = anim.startAlpha + (anim.endAlpha - anim.startAlpha) * eased
@@ -1330,16 +1332,17 @@ local function CreateResultButton(parent, index)
     btn.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
     -- Name text
-    btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    btn.text:SetPoint("LEFT", btn.icon, "RIGHT", 8, 0)
-    btn.text:SetPoint("RIGHT", -8, 0)
-    btn.text:SetJustifyH("LEFT")
-    btn.text:SetTextColor(1, 1, 1)
-
-    -- Type indicator (small text)
+    -- Type indicator (small text, created first so name text can anchor to it)
     btn.typeText = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     btn.typeText:SetPoint("RIGHT", -6, 0)
     btn.typeText:SetTextColor(0.5, 0.5, 0.5)
+
+    btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    btn.text:SetPoint("LEFT", btn.icon, "RIGHT", 8, 0)
+    btn.text:SetPoint("RIGHT", btn.typeText, "LEFT", -4, 0)
+    btn.text:SetJustifyH("LEFT")
+    btn.text:SetWordWrap(false)
+    btn.text:SetTextColor(1, 1, 1)
 
     -- PostClick: hide frame after secure action, or dispatch non-secure entry types
     btn:SetScript("PostClick", function(self)
@@ -1429,11 +1432,11 @@ local function CreateResultButton(parent, index)
         if self.entry.entryType == TYPE_ADDON then
             local entry = self.entry
             if entry.enabled then
-                C_AddOns.DisableAddOn(entry.addonName)
+                C_AddOns.DisableAddOn(entry.addonName, UnitName("player"))
                 entry.enabled = false
                 print("|cff00ff00Wofi:|r |cffff6666" .. entry.name .. "|r disabled — /reload to apply")
             else
-                C_AddOns.EnableAddOn(entry.addonName)
+                C_AddOns.EnableAddOn(entry.addonName, UnitName("player"))
                 entry.enabled = true
                 print("|cff00ff00Wofi:|r |cff66ff66" .. entry.name .. "|r enabled — /reload to apply")
             end
@@ -1705,20 +1708,20 @@ local function CreateUI()
             self:SetPropagateKeyboardInput(true)
         elseif key == "DOWN" then
             self:SetPropagateKeyboardInput(false)
-            selectedIndex = math.min(selectedIndex + 1, math.max(1, #currentResults))
+            selectedIndex = min(selectedIndex + 1, max(1, #currentResults))
             addon:UpdateSelection()
             UpdateEnterBinding()
         elseif key == "UP" then
             self:SetPropagateKeyboardInput(false)
-            selectedIndex = math.max(selectedIndex - 1, 1)
+            selectedIndex = max(selectedIndex - 1, 1)
             addon:UpdateSelection()
             UpdateEnterBinding()
         elseif key == "TAB" then
             self:SetPropagateKeyboardInput(false)
             if IsShiftKeyDown() then
-                selectedIndex = math.max(selectedIndex - 1, 1)
+                selectedIndex = max(selectedIndex - 1, 1)
             else
-                selectedIndex = math.min(selectedIndex + 1, math.max(1, #currentResults))
+                selectedIndex = min(selectedIndex + 1, max(1, #currentResults))
             end
             addon:UpdateSelection()
             UpdateEnterBinding()
@@ -1906,6 +1909,8 @@ function addon:UpdateResults()
                 btn:SetAttribute("spell", nil)
                 btn:SetAttribute("item", nil)
                 btn:SetAttribute("macro", nil)
+                -- Query live state from API (not cached value)
+                entry.enabled = C_AddOns.GetAddOnEnableState(entry.addonIndex, UnitName("player")) > 0
                 if entry.enabled then
                     btn.typeText:SetText("[enabled]")
                     btn.typeText:SetTextColor(0.4, 1.0, 0.4)
@@ -2365,7 +2370,7 @@ local function CreateMerchantQuantityPopup()
         if not qty or qty < 1 then
             qty = 1
         end
-        qty = math.floor(qty)
+        qty = floor(qty)
 
         -- Validate against limited stock
         if entry.numAvailable > 0 and qty > entry.numAvailable then
@@ -2378,7 +2383,7 @@ local function CreateMerchantQuantityPopup()
             -- Batch purchases: BuyMerchantItem is capped at maxStack per call
             local remaining = qty
             while remaining > 0 do
-                local batch = math.min(remaining, maxStack)
+                local batch = min(remaining, maxStack)
                 BuyMerchantItem(entry.index, batch)
                 remaining = remaining - batch
             end
@@ -2626,18 +2631,18 @@ local function CreateMerchantSearchUI()
             end
         elseif key == "DOWN" then
             self:SetPropagateKeyboardInput(false)
-            merchantSelectedIndex = math.min(merchantSelectedIndex + 1, math.max(1, #merchantCurrentResults))
+            merchantSelectedIndex = min(merchantSelectedIndex + 1, max(1, #merchantCurrentResults))
             UpdateMerchantSelection()
         elseif key == "UP" then
             self:SetPropagateKeyboardInput(false)
-            merchantSelectedIndex = math.max(merchantSelectedIndex - 1, 1)
+            merchantSelectedIndex = max(merchantSelectedIndex - 1, 1)
             UpdateMerchantSelection()
         elseif key == "TAB" then
             self:SetPropagateKeyboardInput(false)
             if IsShiftKeyDown() then
-                merchantSelectedIndex = math.max(merchantSelectedIndex - 1, 1)
+                merchantSelectedIndex = max(merchantSelectedIndex - 1, 1)
             else
-                merchantSelectedIndex = math.min(merchantSelectedIndex + 1, math.max(1, #merchantCurrentResults))
+                merchantSelectedIndex = min(merchantSelectedIndex + 1, max(1, #merchantCurrentResults))
             end
             UpdateMerchantSelection()
         else
@@ -2696,7 +2701,7 @@ local function BuildTradeskillCache()
                 local reagentLink = GetTradeSkillReagentItemLink(i, r)
                 local reagentItemID = reagentLink and tonumber(reagentLink:match("item:(%d+)"))
                 if reagentItemID then
-                    table.insert(reagents, {
+                    tinsert(reagents, {
                         itemID = reagentItemID,
                         name = reagentName,
                         count = reagentCount,
@@ -2704,7 +2709,7 @@ local function BuildTradeskillCache()
                 end
             end
 
-            table.insert(tradeskillCache, {
+            tinsert(tradeskillCache, {
                 entryType = TYPE_TRADESKILL,
                 index = i,
                 name = skillName,
@@ -2750,13 +2755,13 @@ RecalcTradeskillAvailability = function()
     -- Recalculate for each recipe that has stored reagent info
     for _, entry in ipairs(tradeskillCache) do
         if entry.reagents and #entry.reagents > 0 then
-            local minCrafts = math.huge
+            local minCrafts = HUGE
             for _, reagent in ipairs(entry.reagents) do
                 local have = bagCounts[reagent.itemID] or 0
-                local canMake = math.floor(have / reagent.count)
-                minCrafts = math.min(minCrafts, canMake)
+                local canMake = floor(have / reagent.count)
+                minCrafts = min(minCrafts, canMake)
             end
-            entry.numAvailable = minCrafts == math.huge and 0 or minCrafts
+            entry.numAvailable = minCrafts == HUGE and 0 or minCrafts
         end
     end
 end
@@ -2776,7 +2781,7 @@ local function ScanNextProfession()
         return
     end
 
-    local profInfo = table.remove(autoScanQueue, 1)
+    local profInfo = tremove(autoScanQueue, 1)
     autoCraftHiding = true
 
     -- Use C_TradeSkillUI.OpenTradeSkill (Blizzard internal API, no taint)
@@ -2811,7 +2816,7 @@ local function StartProfessionScan()
     for i = 1, numSkillLines do
         local name, isHeader = GetSkillLineInfo(i)
         if not isHeader and CRAFTING_PROFESSIONS[name] then
-            table.insert(autoScanQueue, CRAFTING_PROFESSIONS[name])
+            tinsert(autoScanQueue, CRAFTING_PROFESSIONS[name])
         end
     end
 
@@ -2915,7 +2920,7 @@ local function CreateTradeskillQuantityPopup()
 
         local qty = tonumber(tradeskillQuantityPopup.qtyBox:GetText()) or 1
         if qty < 1 then qty = 1 end
-        qty = math.floor(qty)
+        qty = floor(qty)
         if entry.numAvailable > 0 and qty > entry.numAvailable then
             qty = entry.numAvailable
         end
@@ -3008,15 +3013,15 @@ function addon:ShowTradeskillPopup(entry)
         local bagCounts = GetBagCounts()
 
         -- Calculate availability and build display
-        local minCrafts = math.huge
+        local minCrafts = HUGE
         for _, reagent in ipairs(entry.reagents) do
             local playerCount = bagCounts[reagent.itemID] or 0
             local color = playerCount >= reagent.count and "|cff00ff00" or "|cffff3333"
             local name = reagent.name or ("Item #" .. reagent.itemID)
-            table.insert(reagentLines, color .. name .. "|r  " .. playerCount .. "/" .. reagent.count)
-            minCrafts = math.min(minCrafts, math.floor(playerCount / reagent.count))
+            tinsert(reagentLines, color .. name .. "|r  " .. playerCount .. "/" .. reagent.count)
+            minCrafts = min(minCrafts, floor(playerCount / reagent.count))
         end
-        liveAvailable = minCrafts == math.huge and 0 or minCrafts
+        liveAvailable = minCrafts == HUGE and 0 or minCrafts
         -- Update the cached value too
         entry.numAvailable = liveAvailable
     end
@@ -3064,15 +3069,32 @@ end
 
 local LOOT_BROWSER_WIDTH = 690
 local LOOT_BROWSER_HEIGHT = 750
-local LOOT_ITEM_HEIGHT = 26
+local LOOT_ITEM_HEIGHT = 28
+local LOOT_ICON_SIZE = 26
 local LOOT_ITEMS_PER_ROW = 3
 local LOOT_ITEM_WIDTH = 215
+
+-- Expand/collapse state for set-type sections (persists across repopulations)
+local lootClassExpanded = {}   -- [classKey] = true if class group is expanded
+local lootSetExpanded = {}     -- [setID] = true if individual set is expanded
+
+-- Spec labels for multi-set classes, derived from set name suffix
+local SET_SUFFIX_SPEC = {
+    DRUID    = { Raiment = "Restoration", Regalia = "Balance", Harness = "Feral" },
+    SHAMAN   = { Raiment = "Restoration", Regalia = "Elemental", Harness = "Enhancement" },
+    PALADIN  = { Raiment = "Holy", Armor = "Protection", Battlegear = "Retribution" },
+    WARRIOR  = { Armor = "Protection", Battlegear = "DPS" },
+    PRIEST   = { Raiment = "Holy", Regalia = "Shadow" },
+}
 
 -- Item frame pool for the loot browser
 local lootItemPool = {}
 local lootItemPoolUsed = 0
 local lootBossHeaders = {}
 local lootBossHeadersUsed = 0
+local lootPendingItems = {}  -- [itemID] = {frame1, frame2, ...} for async resolution
+
+local PopulateLootBrowser  -- forward declaration for click handlers
 
 local function GetOrCreateLootItem(parent)
     lootItemPoolUsed = lootItemPoolUsed + 1
@@ -3086,11 +3108,15 @@ local function GetOrCreateLootItem(parent)
     local f = CreateFrame("Frame", nil, parent)
     f:SetSize(LOOT_ITEM_WIDTH, LOOT_ITEM_HEIGHT)
 
+    f.bg = f:CreateTexture(nil, "BACKGROUND")
+    f.bg:SetAllPoints()
+    f.bg:SetColorTexture(0, 0, 0, 0)
+
     f.icon = f:CreateTexture(nil, "ARTWORK")
-    f.icon:SetSize(20, 20)
+    f.icon:SetSize(LOOT_ICON_SIZE, LOOT_ICON_SIZE)
     f.icon:SetPoint("LEFT", 2, 0)
 
-    f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     f.text:SetPoint("LEFT", f.icon, "RIGHT", 4, 0)
     f.text:SetPoint("RIGHT", -2, 0)
     f.text:SetJustifyH("LEFT")
@@ -3098,18 +3124,42 @@ local function GetOrCreateLootItem(parent)
 
     f:EnableMouse(true)
     f:SetScript("OnEnter", function(self)
+        if self.expandType then
+            self.bg:SetColorTexture(0.3, 0.3, 0.3, 0.3)
+        end
         if self.itemLink then
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetHyperlink(self.itemLink)
             GameTooltip:Show()
         end
     end)
-    f:SetScript("OnLeave", function()
+    f:SetScript("OnLeave", function(self)
+        if self.expandType then
+            self.bg:SetColorTexture(self.bgR or 0, self.bgG or 0, self.bgB or 0, self.bgA or 0)
+        end
         GameTooltip:Hide()
     end)
     f:SetScript("OnMouseUp", function(self, button)
-        if button == "LeftButton" and IsShiftKeyDown() and self.itemLink then
-            ChatEdit_InsertLink(self.itemLink)
+        if button == "LeftButton" then
+            if self.expandType == "class" then
+                lootClassExpanded[self.expandKey] = not lootClassExpanded[self.expandKey]
+                local scroll = lootBrowserFrame.scrollFrame:GetVerticalScroll()
+                PopulateLootBrowser(lootBrowserFrame.currentInstanceKey, lootBrowserFrame.currentDifficulty, nil, true)
+                C_Timer.After(0, function()
+                    local maxScroll = lootBrowserFrame.scrollFrame:GetVerticalScrollRange()
+                    lootBrowserFrame.scrollFrame:SetVerticalScroll(min(scroll, maxScroll))
+                end)
+            elseif self.expandType == "set" then
+                lootSetExpanded[self.expandKey] = not lootSetExpanded[self.expandKey]
+                local scroll = lootBrowserFrame.scrollFrame:GetVerticalScroll()
+                PopulateLootBrowser(lootBrowserFrame.currentInstanceKey, lootBrowserFrame.currentDifficulty, nil, true)
+                C_Timer.After(0, function()
+                    local maxScroll = lootBrowserFrame.scrollFrame:GetVerticalScrollRange()
+                    lootBrowserFrame.scrollFrame:SetVerticalScroll(min(scroll, maxScroll))
+                end)
+            elseif IsShiftKeyDown() and self.itemLink then
+                ChatEdit_InsertLink(self.itemLink)
+            end
         end
     end)
 
@@ -3133,19 +3183,51 @@ local function GetOrCreateBossHeader(parent)
     return h
 end
 
+local function ResetPooledFrame(f)
+    f:Hide()
+    f:ClearAllPoints()
+    f.itemLink = nil
+    f.setItems = nil
+    f.setName = nil
+    f.isSetEntry = nil
+    f.pendingItemID = nil
+    f.expandType = nil
+    f.expandKey = nil
+    f.bgR, f.bgG, f.bgB, f.bgA = 0, 0, 0, 0
+    f.bg:SetColorTexture(0, 0, 0, 0)
+    f.icon:SetTexCoord(0, 1, 0, 1)
+    f.icon:Show()
+end
+
 local function HidePooledFrames()
     for i = 1, lootItemPoolUsed do
-        lootItemPool[i]:Hide()
-        lootItemPool[i].itemLink = nil
+        ResetPooledFrame(lootItemPool[i])
     end
     lootItemPoolUsed = 0
+    wipe(lootPendingItems)
     for i = 1, lootBossHeadersUsed do
         lootBossHeaders[i]:Hide()
+        lootBossHeaders[i]:ClearAllPoints()
     end
     lootBossHeadersUsed = 0
 end
 
-local function PopulateLootBrowser(instanceKey, difficulty, scrollToBossIndex)
+-- Helper: configure a pooled frame as a full-width expandable row
+local function ConfigureAsRow(frame, scrollChild, xIndent, yOff)
+    local rowWidth = scrollChild:GetWidth() - xIndent - 8
+    frame:SetSize(rowWidth, LOOT_ITEM_HEIGHT)
+    frame:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", xIndent, yOff)
+end
+
+-- Helper: derive spec label for multi-set classes from set name suffix
+local function GetSpecLabel(classKey, setName)
+    local specMap = SET_SUFFIX_SPEC[classKey]
+    if not specMap then return nil end
+    local suffix = setName:match("(%w+)$")
+    return suffix and specMap[suffix] or nil
+end
+
+PopulateLootBrowser = function(instanceKey, difficulty, scrollToBossIndex, preserveScroll)
     if not lootBrowserFrame then return end
     if not IsAtlasLootAvailable() then return end
 
@@ -3171,48 +3253,218 @@ local function PopulateLootBrowser(instanceKey, difficulty, scrollToBossIndex)
             header:SetPoint("RIGHT", scrollChild, "RIGHT", -8, 0)
             header:SetText(bossName)
             bossYPositions[bossIndex] = yOffset
-            yOffset = yOffset - 20
+            yOffset = yOffset - 22
+
+            -- Check if this is a set-type entry (e.g., Tier 5 Sets)
+            local isSetType = bossData.TableType and AtlasLoot.Data and AtlasLoot.Data.ItemSet
 
             -- Get loot for this difficulty
             local lootTable = bossData[difficulty]
             if lootTable and #lootTable > 0 then
-                local col = 0
-                for _, lootEntry in ipairs(lootTable) do
-                    if type(lootEntry) == "table" and type(lootEntry[2]) == "number" and lootEntry[2] > 0 then
-                        local itemID = lootEntry[2]
-                        local itemFrame = GetOrCreateLootItem(scrollChild)
-                        local xPos = 8 + col * LOOT_ITEM_WIDTH
-                        itemFrame:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", xPos, yOffset)
+                if isSetType then
+                    -- ============================================================
+                    -- Expandable set section (Tier Sets)
+                    -- ============================================================
+                    local ItemSet = AtlasLoot.Data.ItemSet
 
-                        -- GetItemInfo triggers server cache request if not yet known;
-                        -- uncached items show as "Item #ID" and resolve on next open
-                        local itemName, itemLink, itemQuality, _, _, _, _, _, _, itemTexture = GetItemInfo(itemID)
-                        if itemName then
-                            itemFrame.icon:SetTexture(itemTexture)
-                            local r, g, b = GetItemQualityColor(itemQuality or 1)
-                            itemFrame.text:SetText(itemName)
-                            itemFrame.text:SetTextColor(r, g, b)
-                            itemFrame.itemLink = itemLink
-                        else
-                            itemFrame.icon:SetTexture(134400)  -- question mark
-                            itemFrame.text:SetText("Item #" .. itemID)
-                            itemFrame.text:SetTextColor(0.5, 0.5, 0.5)
-                            itemFrame.itemLink = nil
-                        end
-
-                        col = col + 1
-                        if col >= LOOT_ITEMS_PER_ROW then
-                            col = 0
-                            yOffset = yOffset - LOOT_ITEM_HEIGHT
+                    -- First pass: group entries by class
+                    local classGroups = {}
+                    local classOrder = {}
+                    for _, lootEntry in ipairs(lootTable) do
+                        if type(lootEntry) == "table" and type(lootEntry[2]) == "number" then
+                            local setID = lootEntry[2]
+                            local setItems = ItemSet.GetSetItems(setID)
+                            if setItems then
+                                local setName = ItemSet.GetSetName and ItemSet.GetSetName(setID) or ("Set " .. setID)
+                                setName = setName:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", "")
+                                local classIcon = ItemSet.GetSetIcon and ItemSet.GetSetIcon(setID, true)
+                                local classFile = classIcon and classIcon:match("classicon_(%w+)")
+                                local classKey = classFile and classFile:upper() or "UNKNOWN"
+                                if not classGroups[classKey] then
+                                    classGroups[classKey] = { sets = {}, icon = classIcon }
+                                    tinsert(classOrder, classKey)
+                                end
+                                tinsert(classGroups[classKey].sets, {
+                                    setID = setID,
+                                    setName = setName,
+                                    setItems = setItems,
+                                })
+                            end
                         end
                     end
-                end
-                -- Finish partial row
-                if col > 0 then
-                    yOffset = yOffset - LOOT_ITEM_HEIGHT
+
+                    -- Sort classes alphabetically
+                    sort(classOrder)
+
+                    -- Second pass: render expandable rows
+                    for _, classKey in ipairs(classOrder) do
+                        local group = classGroups[classKey]
+                        local color = RAID_CLASS_COLORS[classKey]
+                        local displayName = LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[classKey]
+                            or classKey:sub(1, 1) .. classKey:sub(2):lower()
+                        local classIsExpanded = lootClassExpanded[classKey]
+
+                        -- Class header row (clickable)
+                        local classRow = GetOrCreateLootItem(scrollChild)
+                        ConfigureAsRow(classRow, scrollChild, 12, yOffset)
+                        classRow.expandType = "class"
+                        classRow.expandKey = classKey
+                        classRow.bgR, classRow.bgG, classRow.bgB, classRow.bgA = 0.2, 0.2, 0.2, 0.4
+                        classRow.bg:SetColorTexture(0.2, 0.2, 0.2, 0.4)
+                        if group.icon then
+                            classRow.icon:SetTexture(group.icon)
+                        else
+                            classRow.icon:SetTexture(134400)
+                        end
+                        classRow.text:SetText(displayName)
+                        if color then
+                            classRow.text:SetTextColor(color.r, color.g, color.b)
+                        else
+                            classRow.text:SetTextColor(0.8, 0.8, 0.8)
+                        end
+                        yOffset = yOffset - LOOT_ITEM_HEIGHT
+
+                        -- If class is expanded, show its sets
+                        if classIsExpanded then
+                            local singleSet = #group.sets == 1
+
+                            for _, setInfo in ipairs(group.sets) do
+                                local setIsExpanded = lootSetExpanded[setInfo.setID]
+
+                                if singleSet then
+                                    -- Single set: skip set header, show pieces directly under class
+                                    for _, itemID in ipairs(setInfo.setItems) do
+                                        local itemFrame = GetOrCreateLootItem(scrollChild)
+                                        ConfigureAsRow(itemFrame, scrollChild, 28, yOffset)
+                                        itemFrame.bgR, itemFrame.bgG, itemFrame.bgB, itemFrame.bgA = 0.1, 0.1, 0.1, 0.3
+                                        itemFrame.bg:SetColorTexture(0.1, 0.1, 0.1, 0.3)
+
+                                        local itemName, itemLink, itemQuality, _, _, _, _, _, _, itemTexture = GetItemInfo(itemID)
+                                        if itemName then
+                                            itemFrame.icon:SetTexture(itemTexture)
+                                            local ir, ig, ib = GetItemQualityColor(itemQuality or 1)
+                                            itemFrame.text:SetText(itemName)
+                                            itemFrame.text:SetTextColor(ir, ig, ib)
+                                            itemFrame.itemLink = itemLink
+                                        else
+                                            itemFrame.icon:SetTexture(134400)
+                                            itemFrame.text:SetText("Loading...")
+                                            itemFrame.text:SetTextColor(0.5, 0.5, 0.5)
+                                            itemFrame.pendingItemID = itemID
+                                            if not lootPendingItems[itemID] then
+                                                lootPendingItems[itemID] = {}
+                                            end
+                                            tinsert(lootPendingItems[itemID], itemFrame)
+                                        end
+                                        yOffset = yOffset - LOOT_ITEM_HEIGHT
+                                    end
+                                else
+                                    -- Multi-set: show expandable set header
+                                    local specLabel = GetSpecLabel(classKey, setInfo.setName)
+                                    local setLabel = setInfo.setName
+                                    if specLabel then
+                                        setLabel = setLabel .. " |cffcccccc(" .. specLabel .. ")|r"
+                                    end
+
+                                    local setRow = GetOrCreateLootItem(scrollChild)
+                                    ConfigureAsRow(setRow, scrollChild, 28, yOffset)
+                                    setRow.expandType = "set"
+                                    setRow.expandKey = setInfo.setID
+                                    setRow.bgR, setRow.bgG, setRow.bgB, setRow.bgA = 0.15, 0.15, 0.15, 0.4
+                                    setRow.bg:SetColorTexture(0.15, 0.15, 0.15, 0.4)
+
+                                    local firstID = setInfo.setItems[1]
+                                    local iName, _, iQual, _, _, _, _, _, _, iTex = GetItemInfo(firstID)
+                                    if iName then
+                                        setRow.icon:SetTexture(iTex)
+                                    else
+                                        setRow.icon:SetTexture(134400)
+                                        setRow.pendingItemID = firstID
+                                        setRow.isSetEntry = true
+                                        if not lootPendingItems[firstID] then
+                                            lootPendingItems[firstID] = {}
+                                        end
+                                        tinsert(lootPendingItems[firstID], setRow)
+                                    end
+                                    local r, g, b = GetItemQualityColor(iQual or 4)
+                                    setRow.text:SetText(setLabel)
+                                    setRow.text:SetTextColor(r, g, b)
+                                    yOffset = yOffset - LOOT_ITEM_HEIGHT
+
+                                    -- If set is expanded, show individual pieces
+                                    if setIsExpanded then
+                                        for _, itemID in ipairs(setInfo.setItems) do
+                                            local itemFrame = GetOrCreateLootItem(scrollChild)
+                                            ConfigureAsRow(itemFrame, scrollChild, 44, yOffset)
+                                            itemFrame.bgR, itemFrame.bgG, itemFrame.bgB, itemFrame.bgA = 0.1, 0.1, 0.1, 0.3
+                                            itemFrame.bg:SetColorTexture(0.1, 0.1, 0.1, 0.3)
+
+                                            local itemName, itemLink, itemQuality, _, _, _, _, _, _, itemTexture = GetItemInfo(itemID)
+                                            if itemName then
+                                                itemFrame.icon:SetTexture(itemTexture)
+                                                local ir, ig, ib = GetItemQualityColor(itemQuality or 1)
+                                                itemFrame.text:SetText(itemName)
+                                                itemFrame.text:SetTextColor(ir, ig, ib)
+                                                itemFrame.itemLink = itemLink
+                                            else
+                                                itemFrame.icon:SetTexture(134400)
+                                                itemFrame.text:SetText("Loading...")
+                                                itemFrame.text:SetTextColor(0.5, 0.5, 0.5)
+                                                itemFrame.pendingItemID = itemID
+                                                if not lootPendingItems[itemID] then
+                                                    lootPendingItems[itemID] = {}
+                                                end
+                                                tinsert(lootPendingItems[itemID], itemFrame)
+                                            end
+                                            yOffset = yOffset - LOOT_ITEM_HEIGHT
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                else
+                    -- ============================================================
+                    -- Normal boss loot: each lootEntry is { dropRate, itemID }
+                    -- ============================================================
+                    local col = 0
+                    for _, lootEntry in ipairs(lootTable) do
+                        if type(lootEntry) == "table" and type(lootEntry[2]) == "number" and lootEntry[2] > 0 then
+                            local itemID = lootEntry[2]
+                            local itemFrame = GetOrCreateLootItem(scrollChild)
+                            local xPos = 8 + col * LOOT_ITEM_WIDTH
+                            itemFrame:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", xPos, yOffset)
+
+                            local itemName, itemLink, itemQuality, _, _, _, _, _, _, itemTexture = GetItemInfo(itemID)
+                            if itemName then
+                                itemFrame.icon:SetTexture(itemTexture)
+                                local r, g, b = GetItemQualityColor(itemQuality or 1)
+                                itemFrame.text:SetText(itemName)
+                                itemFrame.text:SetTextColor(r, g, b)
+                                itemFrame.itemLink = itemLink
+                            else
+                                itemFrame.icon:SetTexture(134400)
+                                itemFrame.text:SetText("Loading...")
+                                itemFrame.text:SetTextColor(0.5, 0.5, 0.5)
+                                itemFrame.pendingItemID = itemID
+                                if not lootPendingItems[itemID] then
+                                    lootPendingItems[itemID] = {}
+                                end
+                                tinsert(lootPendingItems[itemID], itemFrame)
+                            end
+
+                            col = col + 1
+                            if col >= LOOT_ITEMS_PER_ROW then
+                                col = 0
+                                yOffset = yOffset - LOOT_ITEM_HEIGHT
+                            end
+                        end
+                    end
+                    if col > 0 then
+                        yOffset = yOffset - LOOT_ITEM_HEIGHT
+                    end
                 end
             else
-                -- No loot for this difficulty
                 local noLoot = GetOrCreateBossHeader(scrollChild)
                 noLoot:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 16, yOffset)
                 noLoot:SetText("No loot data for this difficulty")
@@ -3225,14 +3477,14 @@ local function PopulateLootBrowser(instanceKey, difficulty, scrollToBossIndex)
         end
     end
 
-    scrollChild:SetHeight(math.abs(yOffset) + 20)
+    scrollChild:SetHeight(abs(yOffset) + 20)
 
-    -- Scroll to specific boss if requested
+    -- Scroll to specific boss if requested; skip reset when preserving scroll
     if scrollToBossIndex and bossYPositions[scrollToBossIndex] then
         local scrollMax = lootBrowserFrame.scrollFrame:GetVerticalScrollRange()
-        local targetScroll = math.abs(bossYPositions[scrollToBossIndex])
-        lootBrowserFrame.scrollFrame:SetVerticalScroll(math.min(targetScroll, scrollMax))
-    else
+        local targetScroll = abs(bossYPositions[scrollToBossIndex])
+        lootBrowserFrame.scrollFrame:SetVerticalScroll(min(targetScroll, scrollMax))
+    elseif not preserveScroll then
         lootBrowserFrame.scrollFrame:SetVerticalScroll(0)
     end
 end
@@ -3303,26 +3555,32 @@ local function CreateLootBrowser()
     f.scrollChild = scrollChild
 
     -- Escape to close
-    table.insert(UISpecialFrames, "WofiLootBrowserFrame")
+    tinsert(UISpecialFrames, "WofiLootBrowserFrame")
 
-    -- Auto-refresh when item data arrives from server so placeholders resolve
-    local refreshTimer = nil
+    -- Resolve individual item frames when server data arrives (no repopulation)
     local itemEventFrame = CreateFrame("Frame")
     itemEventFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
-    itemEventFrame:SetScript("OnEvent", function()
-        if not f:IsShown() then return end
-        if refreshTimer then return end
-        refreshTimer = C_Timer.After(0.05, function()
-            refreshTimer = nil
-            if f:IsShown() and f.currentInstanceKey then
-                local scrollPos = f.scrollFrame:GetVerticalScroll()
-                PopulateLootBrowser(f.currentInstanceKey, f.currentDifficulty, nil)
-                C_Timer.After(0, function()
-                    local maxScroll = f.scrollFrame:GetVerticalScrollRange()
-                    f.scrollFrame:SetVerticalScroll(math.min(scrollPos, maxScroll))
-                end)
+    itemEventFrame:SetScript("OnEvent", function(_, _, itemID)
+        if not itemID then return end
+        local frames = lootPendingItems[itemID]
+        if not frames then return end
+        local itemName, itemLink, itemQuality, _, _, _, _, _, _, itemTexture = GetItemInfo(itemID)
+        if not itemName then return end
+        for _, itemFrame in ipairs(frames) do
+            if itemFrame:IsShown() then
+                itemFrame.icon:SetTexture(itemTexture)
+                local r, g, b = GetItemQualityColor(itemQuality or 1)
+                if itemFrame.isSetEntry then
+                    -- Set entry: keep set name, just update icon and color
+                    itemFrame.text:SetTextColor(r, g, b)
+                else
+                    itemFrame.text:SetText(itemName)
+                    itemFrame.text:SetTextColor(r, g, b)
+                    itemFrame.itemLink = itemLink
+                end
             end
-        end)
+        end
+        lootPendingItems[itemID] = nil
     end)
 
     f:Hide()
@@ -3371,6 +3629,12 @@ function addon:ShowLootBrowser(instanceKey, scrollToBossIndex)
         instName = C_Map.GetAreaInfo(instData.MapID) or instanceKey
     end
     lootBrowserFrame.title:SetText(instName)
+
+    -- Reset expand/collapse state when switching instances
+    if lootBrowserFrame.currentInstanceKey ~= instanceKey then
+        wipe(lootClassExpanded)
+        wipe(lootSetExpanded)
+    end
     lootBrowserFrame.currentInstanceKey = instanceKey
 
     -- Discover available difficulty keys (numeric keys with table values = loot arrays)
@@ -3385,8 +3649,8 @@ function addon:ShowLootBrowser(instanceKey, scrollToBossIndex)
         end
     end
     local diffKeys = {}
-    for k in pairs(availDiffs) do table.insert(diffKeys, k) end
-    table.sort(diffKeys)
+    for k in pairs(availDiffs) do tinsert(diffKeys, k) end
+    sort(diffKeys)
 
     if #diffKeys >= 2 then
         lootBrowserFrame.normalBtn:Show()
@@ -3651,13 +3915,13 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
                     local key = entry.professionName .. ":" .. entry.name
                     if not loadSeen[key] then
                         loadSeen[key] = true
-                        table.insert(clean, entry)
+                        tinsert(clean, entry)
                     end
                 end
             end
             wipe(WofiDB.tradeskillCache)
             for _, entry in ipairs(clean) do
-                table.insert(WofiDB.tradeskillCache, entry)
+                tinsert(WofiDB.tradeskillCache, entry)
             end
             tradeskillCache = WofiDB.tradeskillCache
         end
@@ -3684,7 +3948,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
             if WofiDB.includeInstances and IsAtlasLootAvailable() then
                 if AtlasLoot.Loader and AtlasLoot.Loader.LoadModule then
                     AtlasLoot.Loader:LoadModule(ATLASLOOT_MODULE, function()
-                        atlasLootModuleLoaded = true
+
                         BuildInstanceCache()
                     end)
                 end
