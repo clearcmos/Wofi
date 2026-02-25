@@ -15,7 +15,7 @@ Built specifically for **TBC Classic Anniversary**.
 - **Tradeskill crafting** - Craft profession recipes directly from the launcher with quantity popup, reagent display, and progress alerts
 - **Merchant search** - Search bar overlays merchant windows for quick item lookup and bulk purchasing
 - **Macro support** - Search and run account-wide and character-specific macros
-- **Player search** - Find and whisper friends, BNet friends, guild members, GreenWall co-guild members, and recently interacted players
+- **Player search** - Find and whisper friends, BNet friends, guild members, GreenWall co-guild members, and recently interacted players with inline level, class, and zone display
 - **Zone search** - Search any game zone and open it on the World Map
 - **Instance lockouts** - Search your saved raids and heroics with live reset timers and boss progress; click to open the Raid Info panel
 - **Quest search** - Search active quests with completion status; click to open quest log and map (enhanced with Questie if installed)
@@ -24,6 +24,7 @@ Built specifically for **TBC Classic Anniversary**.
 - **Loot browser** - Browse dungeon and raid loot tables with difficulty selection and expandable tier set groups (requires AtlasLoot)
 - **Keyboard-driven** - Navigate with arrow keys or Tab, activate with Enter
 - **Drag to action bar** - Right-drag spells, items, and macros to place them on your bars
+- **Customizable appearance** - Adjust launcher width, height, and font sizes with live preview
 - **Custom keybind** - Set any key combo to open the launcher instantly
 - **Smart prioritization** - Exact matches first, then prefix, then contains, then fuzzy
 - **Auto-close on combat** - Stays out of your way when the fight starts
@@ -96,6 +97,10 @@ Open with `/wofi config`:
 - **Maximum search results** - Adjust from 4 to 12 results (default 8)
 - **Show craft progress notification** - Toggle the center-screen craft alert
 - **Show merchant search bar** - Toggle the search overlay on merchant windows
+- **Launcher width** - Adjust launcher width from 250 to 600 pixels (default 480)
+- **Launcher bar height** - Adjust launcher bar height from 30 to 70 pixels (default 46)
+- **Entry font size** - Adjust result entry name font size from 8 to 22 (default 14)
+- **Descriptor font size** - Adjust category/detail font size from 7 to 16 (default 10)
 - **Keybind** - View, set, or clear your custom hotkey
 - **Refresh caches** - Manually rebuild spell/item/macro/profession lists
 

@@ -22,6 +22,10 @@ local defaults = {
     includeAddons = true,
     includeInstances = true,
     welcomeShown = false,
+    launcherWidth = 480,
+    launcherHeight = 46,
+    entryFontSize = 14,
+    descriptorFontSize = 10,
 }
 
 -- Caches
@@ -50,6 +54,7 @@ local recentPlayerCount = 0
 local coGuildPlayers = {}  -- session-only, populated by GreenWall message handler or comember_cache seed
 local MAX_RECENT_PLAYERS = 50
 local playerCacheRebuildTimer = nil
+local playerName  -- cached playerName, set in PLAYER_LOGIN
 
 -- Localized API functions (avoid table lookups in hot paths)
 -- Note: C_Container functions must be called as C_Container.X() — they are not
@@ -57,6 +62,8 @@ local playerCacheRebuildTimer = nil
 local GetTradeskillRepeatCount = _G.GetTradeskillRepeatCount
 local rad = math.rad
 local HUGE = math.huge
+local tconcat = table.concat
+local strbyte = strbyte
 
 -- Main frame
 local WofiFrame
@@ -68,6 +75,10 @@ local currentResults = {}
 local MAX_RESULTS = 12
 local initializing = false
 local welcomeFrame = nil
+local resultButtonHeight = 30  -- computed from font sizes, used in UpdateResults
+local playerDetailParts = {}  -- reusable table for player detail string building
+local ApplyLayoutSettings      -- forward declaration
+local configPreviewActive = false
 
 -- Settings category ID for native options panel
 local settingsCategoryID = nil
@@ -123,13 +134,21 @@ local autoCraftHiding = false  -- true while TradeSkillFrame should be invisible
 local autoCraftPollTicker = nil
 local RecalcTradeskillAvailability  -- forward declaration (defined later in file)
 
--- Standalone frame that enforces TradeSkillFrame invisibility every rendered frame
+-- Standalone frame that enforces TradeSkillFrame invisibility when auto-crafting
 local tradeskillHider = CreateFrame("Frame")
-tradeskillHider:SetScript("OnUpdate", function()
-    if autoCraftHiding and TradeSkillFrame and TradeSkillFrame:IsShown() then
-        TradeSkillFrame:SetAlpha(0)
+local function SetAutoCraftHiding(enabled)
+    autoCraftHiding = enabled
+    if enabled then
+        tradeskillHider:SetScript("OnUpdate", function()
+            if TradeSkillFrame and TradeSkillFrame:IsShown() then
+                TradeSkillFrame:SetAlpha(0)
+            end
+        end)
+    else
+        tradeskillHider:SetScript("OnUpdate", nil)
+        if TradeSkillFrame then TradeSkillFrame:SetAlpha(1) end
     end
-end)
+end
 
 -- Craft progress alert (RepSync-style center-screen fade)
 local craftAlertFrame = CreateFrame("Frame", "WofiCraftAlertFrame", UIParent)
@@ -253,10 +272,7 @@ local function StartAutoCraftClose(recipeName, qty)
                     DismissCraftAlert()
                 end
             end
-            autoCraftHiding = false
-            if TradeSkillFrame then
-                TradeSkillFrame:SetAlpha(1)
-            end
+            SetAutoCraftHiding(false)
             CloseTradeSkill()
             RecalcTradeskillAvailability()
         end
@@ -441,6 +457,11 @@ end
 -- Player Cache
 -- ============================================================================
 
+local function TitleCase(s)
+    if not s then return nil end
+    return s:sub(1, 1) .. s:sub(2):lower()
+end
+
 local BuildPlayerCache  -- forward declaration
 
 local function SchedulePlayerCacheRebuild()
@@ -464,7 +485,7 @@ local function SeedCoGuildFromCache()
     if not cache then return end
     for name, _ in pairs(cache) do
         local shortName = name:match("^([^%-]+)") or name
-        if shortName ~= UnitName("player") and not coGuildPlayers[shortName] then
+        if shortName ~= playerName and not coGuildPlayers[shortName] then
             coGuildPlayers[shortName] = { timestamp = GetTime() }
         end
     end
@@ -560,7 +581,7 @@ BuildPlayerCache = function()
             if fullName and isOnline then
                 -- Strip realm suffix if same realm
                 local shortName = fullName:match("^([^%-]+)")
-                local classDisplay = classFile and (classFile:sub(1,1) .. classFile:sub(2):lower()) or nil
+                local classDisplay = TitleCase(classFile)
                 AddPlayer(shortName, PLAYER_SOURCE_GUILD, classDisplay, classFile, level, zone)
             end
         end
@@ -583,7 +604,7 @@ end
 local function TrackRecentPlayer(name, class, classUpper, level, zone)
     if not name or name == "" then return end
     -- Skip self
-    local myName = UnitName("player")
+    local myName = playerName
     if name == myName then return end
     -- Strip realm if same realm
     local shortName = name:match("^([^%-]+)") or name
@@ -740,7 +761,7 @@ local function BuildAddonCache()
     for i = 1, numAddons do
         local name, title, notes, loadable, reason, security = C_AddOns.GetAddOnInfo(i)
         if name then
-            local enabled = C_AddOns.GetAddOnEnableState(i, UnitName("player")) > 0
+            local enabled = C_AddOns.GetAddOnEnableState(i, playerName) > 0
             local displayName = title and title ~= "" and title or name
             -- Strip color codes from title for clean display/search
             local cleanName = displayName:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
@@ -754,7 +775,7 @@ local function BuildAddonCache()
                 notes       = notes,
                 enabled     = enabled,
                 loaded      = C_AddOns.IsAddOnLoaded(i),
-                texture     = 134400,    -- INV_Misc_QuestionMark
+                texture     = 134390,    -- INV_Misc_PunchCards_Blue
             })
         end
     end
@@ -795,7 +816,7 @@ local function BuildInstanceCache()
                 end
             end
             if not instName or instName == "" or instName == "UNKNOWN" then
-                instName = C_Map.GetAreaInfo(instData.MapID) or instanceKey
+                instName = GetAreaInfo(instData.MapID) or instanceKey
             end
 
             -- Determine content type (dungeon vs raid)
@@ -901,15 +922,36 @@ end
 -- Lockout Cache
 -- ============================================================================
 
+local function GetCacheStatsString()
+    local itemCount   = WofiDB.includeItems       and #itemCache       or 0
+    local macroCount  = WofiDB.includeMacros      and #macroCache      or 0
+    local tradeCount  = #tradeskillCache
+    local playerCount = WofiDB.includePlayers     and #playerCache     or 0
+    local zoneCount   = WofiDB.includeZones       and #zoneCache       or 0
+    local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
+    local questCount  = WofiDB.includeQuests      and #questCache      or 0
+    local repCount    = WofiDB.includeReputations and #reputationCache or 0
+    local addonCount  = WofiDB.includeAddons      and #addonCache      or 0
+    local instCount   = WofiDB.includeInstances   and #instanceCache   or 0
+    return #spellCache .. " spells, " .. itemCount .. " items, " ..
+        macroCount .. " macros, " .. tradeCount .. " recipes, " ..
+        playerCount .. " players, " .. zoneCount .. " zones, " ..
+        lockCount .. " lockouts, " .. questCount .. " quests, " ..
+        repCount .. " reps, " .. addonCount .. " addons, " ..
+        instCount .. " instances/bosses"
+end
+
+local formatNumberParts = {}
 local function FormatNumber(n)
+    wipe(formatNumberParts)
     local s = tostring(n)
     local pos = #s % 3
     if pos == 0 then pos = 3 end
-    local parts = { s:sub(1, pos) }
+    tinsert(formatNumberParts, s:sub(1, pos))
     for i = pos + 1, #s, 3 do
-        tinsert(parts, s:sub(i, i + 2))
+        tinsert(formatNumberParts, s:sub(i, i + 2))
     end
-    return table.concat(parts, ",")
+    return tconcat(formatNumberParts, ",")
 end
 
 local function FormatResetTime(seconds)
@@ -996,7 +1038,7 @@ local function FuzzyMatch(query, target)
     local lastMatchIdx = 0
 
     for i = 1, targetLen do
-        if target:byte(i) == query:byte(queryIdx) then
+        if strbyte(target, i) == strbyte(query, queryIdx) then
             -- Penalty for gaps between matched characters
             if lastMatchIdx > 0 then
                 score = score + (i - lastMatchIdx - 1)
@@ -1127,25 +1169,24 @@ end
 -- Merchant Search
 -- ============================================================================
 
+local formatPriceParts = {}
 local function FormatPrice(copper)
     if not copper or copper == 0 then return "" end
-
+    wipe(formatPriceParts)
     local gold = floor(copper / 10000)
     local silver = floor((copper % 10000) / 100)
     local cop = copper % 100
-
-    local parts = {}
-    if gold > 0 then tinsert(parts, "|cffffd700" .. gold .. "g|r") end
-    if silver > 0 then tinsert(parts, "|cffc7c7cf" .. silver .. "s|r") end
-    if cop > 0 then tinsert(parts, "|cffeda55f" .. cop .. "c|r") end
-
-    return table.concat(parts, " ")
+    if gold > 0 then tinsert(formatPriceParts, "|cffffd700" .. gold .. "g|r") end
+    if silver > 0 then tinsert(formatPriceParts, "|cffc7c7cf" .. silver .. "s|r") end
+    if cop > 0 then tinsert(formatPriceParts, "|cffeda55f" .. cop .. "c|r") end
+    return tconcat(formatPriceParts, " ")
 end
 
+local merchantSearchResults = {}
 local function SearchMerchant(query)
     wipe(searchExact); wipe(searchStart); wipe(searchContains); wipe(searchFuzzy)
-    local results = {}
-    if not query or query == "" then return results end
+    wipe(merchantSearchResults)
+    if not query or query == "" then return merchantSearchResults end
 
     local queryLower = query:lower()
 
@@ -1155,19 +1196,19 @@ local function SearchMerchant(query)
 
     local maxResults = WofiDB.maxResults or 8
     for _, entry in ipairs(searchExact) do
-        if #results < maxResults then tinsert(results, entry) end
+        if #merchantSearchResults < maxResults then tinsert(merchantSearchResults, entry) end
     end
     for _, entry in ipairs(searchStart) do
-        if #results < maxResults then tinsert(results, entry) end
+        if #merchantSearchResults < maxResults then tinsert(merchantSearchResults, entry) end
     end
     for _, entry in ipairs(searchContains) do
-        if #results < maxResults then tinsert(results, entry) end
+        if #merchantSearchResults < maxResults then tinsert(merchantSearchResults, entry) end
     end
     for _, match in ipairs(searchFuzzy) do
-        if #results < maxResults then tinsert(results, match.entry) end
+        if #merchantSearchResults < maxResults then tinsert(merchantSearchResults, match.entry) end
     end
 
-    return results
+    return merchantSearchResults
 end
 
 -- ============================================================================
@@ -1337,6 +1378,12 @@ local function CreateResultButton(parent, index)
     btn.typeText:SetPoint("RIGHT", -6, 0)
     btn.typeText:SetTextColor(0.5, 0.5, 0.5)
 
+    btn.detailText = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    btn.detailText:SetPoint("RIGHT", btn.typeText, "LEFT", -6, 0)
+    btn.detailText:SetJustifyH("RIGHT")
+    btn.detailText:SetWordWrap(false)
+    btn.detailText:SetTextColor(0.7, 0.7, 0.7)
+
     btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     btn.text:SetPoint("LEFT", btn.icon, "RIGHT", 8, 0)
     btn.text:SetPoint("RIGHT", btn.typeText, "LEFT", -4, 0)
@@ -1432,11 +1479,11 @@ local function CreateResultButton(parent, index)
         if self.entry.entryType == TYPE_ADDON then
             local entry = self.entry
             if entry.enabled then
-                C_AddOns.DisableAddOn(entry.addonName, UnitName("player"))
+                C_AddOns.DisableAddOn(entry.addonName, playerName)
                 entry.enabled = false
                 print("|cff00ff00Wofi:|r |cffff6666" .. entry.name .. "|r disabled — /reload to apply")
             else
-                C_AddOns.EnableAddOn(entry.addonName, UnitName("player"))
+                C_AddOns.EnableAddOn(entry.addonName, playerName)
                 entry.enabled = true
                 print("|cff00ff00Wofi:|r |cff66ff66" .. entry.name .. "|r enabled — /reload to apply")
             end
@@ -1645,7 +1692,7 @@ end
 local function CreateUI()
     -- Main frame (no backdrop template - we draw our own)
     WofiFrame = CreateFrame("Frame", "WofiFrame", UIParent)
-    WofiFrame:SetSize(360, 46)
+    WofiFrame:SetSize(WofiDB.launcherWidth, WofiDB.launcherHeight)
     WofiFrame:SetPoint("CENTER", 0, 200)
     WofiFrame:SetFrameStrata("DIALOG")
     WofiFrame:SetMovable(true)
@@ -1687,6 +1734,9 @@ local function CreateUI()
         end
         resultButtons[i] = btn
     end
+
+    -- Apply saved layout dimensions and font sizes
+    ApplyLayoutSettings()
 
     -- Scripts
     searchBox:SetScript("OnTextChanged", function(self)
@@ -1731,6 +1781,9 @@ local function CreateUI()
     end)
 
     WofiFrame:SetScript("OnShow", function(self)
+        -- Skip normal init when showing as config preview
+        if configPreviewActive then return end
+
         initializing = true
         -- Start fade-in animation
         StartFadeIn(self, 0.12)
@@ -1775,6 +1828,45 @@ local function CreateUI()
     WofiFrame:SetScript("OnDragStop", WofiFrame.StopMovingOrSizing)
 end
 
+ApplyLayoutSettings = function()
+    if not WofiFrame then return end
+
+    -- Frame dimensions
+    WofiFrame:SetSize(WofiDB.launcherWidth, WofiDB.launcherHeight)
+
+    -- Search box font size (match entry font)
+    local fontPath, _, fontFlags = searchBox:GetFont()
+    searchBox:SetFont(fontPath, WofiDB.entryFontSize, fontFlags or "")
+
+    -- Result button fonts and height
+    local entrySize = WofiDB.entryFontSize
+    local descSize = WofiDB.descriptorFontSize
+    resultButtonHeight = math.max(entrySize, descSize) + 16
+
+    for i = 1, MAX_RESULTS do
+        local btn = resultButtons[i]
+        if btn then
+            btn:SetHeight(resultButtonHeight)
+            -- Icon scales with button height
+            local iconSize = resultButtonHeight - 6
+            btn.icon:SetSize(iconSize, iconSize)
+            -- Entry name font
+            local tf, _, tfl = btn.text:GetFont()
+            btn.text:SetFont(tf, entrySize, tfl or "")
+            -- Descriptor / type / detail fonts
+            local tyf, _, tyfl = btn.typeText:GetFont()
+            btn.typeText:SetFont(tyf, descSize, tyfl or "")
+            local df, _, dfl = btn.detailText:GetFont()
+            btn.detailText:SetFont(df, descSize, dfl or "")
+        end
+    end
+
+    -- Refresh results layout if visible
+    if resultsFrame and resultsFrame:IsShown() then
+        addon:UpdateResults()
+    end
+end
+
 function addon:UpdateResults()
     if #currentResults == 0 then
         resultsFrame:Hide()
@@ -1800,6 +1892,8 @@ function addon:UpdateResults()
             btn.icon:SetTexture(entry.texture)
             btn.icon:SetTexCoord(0, 1, 0, 1)  -- Reset tex coords (player entries override)
             btn.text:SetText(entry.name)
+            btn.detailText:SetText("")
+            btn.text:SetPoint("RIGHT", btn.typeText, "LEFT", -4, 0)
             btn.selected:SetShown(i == selectedIndex)
 
             if entry.entryType == TYPE_SPELL then
@@ -1849,6 +1943,31 @@ function addon:UpdateResults()
                 if entry.classUpper and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[entry.classUpper] then
                     local coords = CLASS_ICON_TCOORDS[entry.classUpper]
                     btn.icon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+                end
+                -- Build detail string for separate small font: "70 Mage - Shattrath"
+                wipe(playerDetailParts)
+                if entry.level then
+                    tinsert(playerDetailParts, entry.level)
+                end
+                if entry.class then
+                    local cc = entry.classUpper and RAID_CLASS_COLORS and RAID_CLASS_COLORS[entry.classUpper]
+                    if cc then
+                        tinsert(playerDetailParts, format("|cff%02x%02x%02x%s|r", cc.r * 255, cc.g * 255, cc.b * 255, entry.class))
+                    else
+                        tinsert(playerDetailParts, entry.class)
+                    end
+                end
+                local detailStr = tconcat(playerDetailParts, " ")
+                if entry.zone and entry.zone ~= "" then
+                    if detailStr ~= "" then
+                        detailStr = detailStr .. " |cff999999-|r |cff88bbdd" .. entry.zone .. "|r"
+                    else
+                        detailStr = "|cff88bbdd" .. entry.zone .. "|r"
+                    end
+                end
+                btn.detailText:SetText(detailStr)
+                if detailStr ~= "" then
+                    btn.text:SetPoint("RIGHT", btn.detailText, "LEFT", -4, 0)
                 end
                 local sourceInfo = PLAYER_SOURCE_INFO[entry.source]
                 if sourceInfo then
@@ -1910,7 +2029,7 @@ function addon:UpdateResults()
                 btn:SetAttribute("item", nil)
                 btn:SetAttribute("macro", nil)
                 -- Query live state from API (not cached value)
-                entry.enabled = C_AddOns.GetAddOnEnableState(entry.addonIndex, UnitName("player")) > 0
+                entry.enabled = C_AddOns.GetAddOnEnableState(entry.addonIndex, playerName) > 0
                 if entry.enabled then
                     btn.typeText:SetText("[enabled]")
                     btn.typeText:SetTextColor(0.4, 1.0, 0.4)
@@ -1943,7 +2062,7 @@ function addon:UpdateResults()
             end
 
             btn:Show()
-            height = height + 30
+            height = height + resultButtonHeight + 2
         else
             btn.entry = nil
             btn:SetAttribute("type", "spell")
@@ -2044,12 +2163,15 @@ local function RegisterSettings()
     end
 
     -- Helper: register a numeric proxy setting + slider
-    local function AddSlider(key, name, tooltip, minVal, maxVal, step)
+    local function AddSlider(key, name, tooltip, minVal, maxVal, step, onChange)
         local setting = Settings.RegisterProxySetting(category,
             "WOFI_" .. key:upper(), Settings.VarType.Number, name,
             defaults[key],
             function() return WofiDB[key] end,
-            function(value) WofiDB[key] = value end)
+            function(value)
+                WofiDB[key] = value
+                if onChange then onChange(value) end
+            end)
         local options = Settings.CreateSliderOptions(minVal, maxVal, step)
         options:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
         return Settings.CreateSlider(category, setting, options, tooltip)
@@ -2132,6 +2254,26 @@ local function RegisterSettings()
 
     AddCheckbox("showMerchantSearch", "Merchant search bar",
         "Show a search bar overlay on merchant windows.")
+
+    -- Section: Appearance
+    layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Appearance"))
+
+    local function OnAppearanceChanged()
+        ApplyLayoutSettings()
+        if addon.ShowAppearancePreview then addon.ShowAppearancePreview() end
+    end
+
+    AddSlider("launcherWidth", "Launcher width",
+        "Width of the search bar in pixels.", 250, 600, 10, OnAppearanceChanged)
+
+    AddSlider("launcherHeight", "Launcher bar height",
+        "Height of the search bar in pixels.", 30, 70, 2, OnAppearanceChanged)
+
+    AddSlider("entryFontSize", "Entry font size",
+        "Font size for spell/item/macro names on the left.", 8, 22, 1, OnAppearanceChanged)
+
+    AddSlider("descriptorFontSize", "Descriptor font size",
+        "Font size for category tags and details on the right.", 7, 16, 1, OnAppearanceChanged)
 
     -- Section: Keybind
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Keybind"))
@@ -2234,50 +2376,82 @@ local function RegisterSettings()
             refreshBtn:SetText("Refresh Cache")
             refreshBtn:SetScript("OnClick", function()
                 addon:RefreshCache()
-                local itemCount   = WofiDB.includeItems       and #itemCache       or 0
-                local macroCount  = WofiDB.includeMacros      and #macroCache      or 0
-                local tradeCount  = #tradeskillCache
-                local playerCount = WofiDB.includePlayers     and #playerCache     or 0
-                local zoneCount   = WofiDB.includeZones       and #zoneCache       or 0
-                local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
-                local questCount  = WofiDB.includeQuests      and #questCache      or 0
-                local repCount    = WofiDB.includeReputations and #reputationCache or 0
-                local addonCount  = WofiDB.includeAddons      and #addonCache      or 0
-                local instCount   = WofiDB.includeInstances   and #instanceCache   or 0
-                frame.statsLabel:SetText(
-                    #spellCache .. " spells, " .. itemCount .. " items, " ..
-                    macroCount .. " macros, " .. tradeCount .. " recipes, " ..
-                    playerCount .. " players, " .. zoneCount .. " zones, " ..
-                    lockCount .. " lockouts, " .. questCount .. " quests, " ..
-                    repCount .. " reps, " .. addonCount .. " addons, " ..
-                    instCount .. " instances/bosses")
+                frame.statsLabel:SetText(GetCacheStatsString())
             end)
         end
 
         frame.wofiCacheContainer:Show()
 
-        local itemCount   = WofiDB.includeItems       and #itemCache       or 0
-        local macroCount  = WofiDB.includeMacros      and #macroCache      or 0
-        local tradeCount  = #tradeskillCache
-        local playerCount = WofiDB.includePlayers     and #playerCache     or 0
-        local zoneCount   = WofiDB.includeZones       and #zoneCache       or 0
-        local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
-        local questCount  = WofiDB.includeQuests      and #questCache      or 0
-        local repCount    = WofiDB.includeReputations and #reputationCache or 0
-        local addonCount  = WofiDB.includeAddons      and #addonCache      or 0
-        local instCount   = WofiDB.includeInstances   and #instanceCache   or 0
-        frame.statsLabel:SetText(
-            #spellCache .. " spells, " .. itemCount .. " items, " ..
-            macroCount .. " macros, " .. tradeCount .. " recipes, " ..
-            playerCount .. " players, " .. zoneCount .. " zones, " ..
-            lockCount .. " lockouts, " .. questCount .. " quests, " ..
-            repCount .. " reps, " .. addonCount .. " addons, " ..
-            instCount .. " instances/bosses")
+        frame.statsLabel:SetText(GetCacheStatsString())
     end
     layout:AddInitializer(cacheInit)
 
     Settings.RegisterAddOnCategory(category)
     settingsCategoryID = category:GetID()
+
+    -- Preview: show launcher on the left when appearance sliders are adjusted
+    local previewShown = false
+    local wasShownBeforePreview = false
+    local previewHideTimer = nil
+    local savedPoint = nil  -- original position before preview
+
+    local function ShowPreview()
+        if not WofiFrame then return end
+
+        -- Cancel any pending hide
+        if previewHideTimer then previewHideTimer:Cancel() previewHideTimer = nil end
+
+        if not previewShown then
+            wasShownBeforePreview = WofiFrame:IsShown()
+            previewShown = true
+            configPreviewActive = true
+
+            -- Save original position and move to left side
+            local point, rel, relPoint, x, y = WofiFrame:GetPoint(1)
+            savedPoint = { point, rel, relPoint, x, y }
+            WofiFrame:ClearAllPoints()
+            WofiFrame:SetPoint("LEFT", UIParent, "LEFT", 20, 100)
+
+            -- Populate sample results for preview
+            currentResults = {
+                { entryType = TYPE_SPELL, name = "Fireball", subName = "Rank 12", texture = 135812 },
+                { entryType = TYPE_ITEM, name = "Hearthstone", texture = 134414 },
+                { entryType = TYPE_MACRO, name = "Assist Focus", texture = 132212, macroIndex = 1 },
+                { entryType = TYPE_PLAYER, name = "Legolas", texture = "Interface\\GLUES\\CHARACTERCREATE\\UI-CharacterCreate-Classes", source = 3, class = "Hunter", classUpper = "HUNTER", level = 70, zone = "Shattrath City" },
+            }
+            selectedIndex = 1
+
+            WofiFrame:Show()
+            searchBox:SetText("")
+            searchBox:ClearFocus()
+        end
+
+        addon:UpdateResults()
+
+        -- Auto-hide after 3 seconds of no slider activity
+        previewHideTimer = C_Timer.NewTimer(3, function()
+            previewHideTimer = nil
+            if not previewShown then return end
+            previewShown = false
+            configPreviewActive = false
+
+            -- Restore original position
+            if savedPoint then
+                WofiFrame:ClearAllPoints()
+                WofiFrame:SetPoint(savedPoint[1], savedPoint[2], savedPoint[3], savedPoint[4], savedPoint[5])
+                savedPoint = nil
+            end
+
+            if not wasShownBeforePreview then
+                WofiFrame:Hide()
+            end
+            currentResults = {}
+            selectedIndex = 1
+        end)
+    end
+
+    -- Wire appearance sliders to trigger preview
+    addon.ShowAppearancePreview = ShowPreview
 end
 
 function addon:ShowConfig()
@@ -2773,16 +2947,13 @@ end
 local function ScanNextProfession()
     if #autoScanQueue == 0 then
         autoScanActive = false
-        autoCraftHiding = false
-        if TradeSkillFrame then
-            TradeSkillFrame:SetAlpha(1)
-        end
+        SetAutoCraftHiding(false)
         print("|cff00ff00Wofi:|r Profession scan complete (" .. #tradeskillCache .. " recipes indexed)")
         return
     end
 
     local profInfo = tremove(autoScanQueue, 1)
-    autoCraftHiding = true
+    SetAutoCraftHiding(true)
 
     -- Use C_TradeSkillUI.OpenTradeSkill (Blizzard internal API, no taint)
     if C_TradeSkillUI and C_TradeSkillUI.OpenTradeSkill then
@@ -2926,7 +3097,7 @@ local function CreateTradeskillQuantityPopup()
         end
 
         -- Always start hiding the TradeSkillFrame
-        autoCraftHiding = true
+        SetAutoCraftHiding(true)
 
         if tradeskillWindowOpen then
             -- Window already open: craft directly, hide it, poll for completion
@@ -2945,7 +3116,7 @@ local function CreateTradeskillQuantityPopup()
                 if pendingCraft and pendingCraft.recipeName == craftName then
                     print("|cff00ff00Wofi:|r Craft cancelled (profession did not open)")
                     pendingCraft = nil
-                    autoCraftHiding = false
+                    SetAutoCraftHiding(false)
                 end
             end)
         end
@@ -3033,7 +3204,7 @@ function addon:ShowTradeskillPopup(entry)
         tradeskillQuantityPopup.availText:SetText("Missing reagents")
         tradeskillQuantityPopup.availText:SetTextColor(1, 0.3, 0.3)
     end
-    tradeskillQuantityPopup.reagentText:SetText(table.concat(reagentLines, "\n"))
+    tradeskillQuantityPopup.reagentText:SetText(tconcat(reagentLines, "\n"))
 
     -- Adjust height based on reagent count
     local baseHeight = 140
@@ -3301,7 +3472,7 @@ PopulateLootBrowser = function(instanceKey, difficulty, scrollToBossIndex, prese
                         local group = classGroups[classKey]
                         local color = RAID_CLASS_COLORS[classKey]
                         local displayName = LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[classKey]
-                            or classKey:sub(1, 1) .. classKey:sub(2):lower()
+                            or TitleCase(classKey)
                         local classIsExpanded = lootClassExpanded[classKey]
 
                         -- Class header row (clickable)
@@ -3599,7 +3770,7 @@ function addon:ShowLootBrowser(instanceKey, scrollToBossIndex)
         -- Try loading on demand
         if AtlasLoot.Loader and AtlasLoot.Loader.LoadModule then
             AtlasLoot.Loader:LoadModule(ATLASLOOT_MODULE, function()
-                atlasLootModuleLoaded = true
+                -- module loaded successfully
                 if not instanceCacheBuilt then BuildInstanceCache() end
                 addon:ShowLootBrowser(instanceKey, scrollToBossIndex)
             end)
@@ -3626,7 +3797,7 @@ function addon:ShowLootBrowser(instanceKey, scrollToBossIndex)
         end
     end
     if instName == "" or instName == "UNKNOWN" then
-        instName = C_Map.GetAreaInfo(instData.MapID) or instanceKey
+        instName = GetAreaInfo(instData.MapID) or instanceKey
     end
     lootBrowserFrame.title:SetText(instName)
 
@@ -3819,21 +3990,7 @@ function addon:RefreshCache()
     if WofiDB.includeAddons      then BuildAddonCache()      end
     if WofiDB.includeInstances and IsAtlasLootAvailable() then BuildInstanceCache() end
     if #tradeskillCache > 0      then RecalcTradeskillAvailability() end
-    local itemCount   = WofiDB.includeItems       and #itemCache       or 0
-    local macroCount  = WofiDB.includeMacros      and #macroCache      or 0
-    local playerCount = WofiDB.includePlayers     and #playerCache     or 0
-    local zoneCount   = WofiDB.includeZones       and #zoneCache       or 0
-    local lockCount   = WofiDB.includeLockouts    and #lockoutCache    or 0
-    local questCount  = WofiDB.includeQuests      and #questCache      or 0
-    local repCount    = WofiDB.includeReputations and #reputationCache or 0
-    local addonCount  = WofiDB.includeAddons      and #addonCache      or 0
-    local instCount   = WofiDB.includeInstances   and #instanceCache   or 0
-    print("|cff00ff00Wofi:|r Cache refreshed (" ..
-        #spellCache .. " spells, " .. itemCount .. " items, " ..
-        macroCount .. " macros, " .. playerCount .. " players, " ..
-        zoneCount .. " zones, " .. lockCount .. " lockouts, " ..
-        questCount .. " quests, " .. repCount .. " reps, " ..
-        addonCount .. " addons, " .. instCount .. " instances/bosses)")
+    print("|cff00ff00Wofi:|r Cache refreshed (" .. GetCacheStatsString() .. ")")
 end
 
 -- Slash commands
@@ -3928,6 +4085,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
         eventFrame:UnregisterEvent("ADDON_LOADED")
 
     elseif event == "PLAYER_LOGIN" then
+        playerName = UnitName("player")
         -- Build caches after login
         C_Timer.After(1, function()
             BuildSpellCache()
@@ -3970,7 +4128,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
                             if WofiDB.includePlayers and arglist and arglist[2] then
                                 local sender = arglist[2]
                                 local shortName = sender:match("^([^%-]+)") or sender
-                                if shortName ~= UnitName("player") and not coGuildPlayers[shortName] then
+                                if shortName ~= playerName and not coGuildPlayers[shortName] then
                                     coGuildPlayers[shortName] = { timestamp = GetTime() }
                                     SchedulePlayerCacheRebuild()
                                 end
@@ -4002,8 +4160,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
             end
             local bindMsg = WofiDB.keybind and (" Keybind: |cff88ff88" .. WofiDB.keybind .. "|r") or ""
             local tradeMsg = #tradeskillCache > 0 and (", " .. #tradeskillCache .. " recipes cached") or ""
-            local playerMsg = ""
-            print("|cff00ff00Wofi|r loaded. Type |cff88ff88/wofi|r to open." .. bindMsg .. tradeMsg .. playerMsg)
+            print("|cff00ff00Wofi|r loaded. Type |cff88ff88/wofi|r to open." .. bindMsg .. tradeMsg)
 
             -- Show welcome screen on first run
             if not WofiDB.welcomeShown then
@@ -4165,10 +4322,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
             tradeskillUpdateTimer = nil
         end
         tradeskillWindowOpen = false
-        autoCraftHiding = false
-        if TradeSkillFrame then
-            TradeSkillFrame:SetAlpha(1)
-        end
+        SetAutoCraftHiding(false)
         if tradeskillQuantityPopup and tradeskillQuantityPopup:IsShown() then
             tradeskillQuantityPopup:Hide()
         end
@@ -4198,7 +4352,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
         if WofiDB.includePlayers and UnitIsPlayer("target") and UnitIsFriend("player", "target") then
             local name = UnitName("target")
             local _, classUpper = UnitClass("target")
-            local classDisplay = classUpper and (classUpper:sub(1,1) .. classUpper:sub(2):lower()) or nil
+            local classDisplay = TitleCase(classUpper)
             local level = UnitLevel("target")
             TrackRecentPlayer(name, classDisplay, classUpper, level)
         end
@@ -4214,7 +4368,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
                     if UnitExists(unit) and UnitIsPlayer(unit) and UnitIsConnected(unit) then
                         local name = UnitName(unit)
                         local _, classUpper = UnitClass(unit)
-                        local classDisplay = classUpper and (classUpper:sub(1,1) .. classUpper:sub(2):lower()) or nil
+                        local classDisplay = TitleCase(classUpper)
                         local level = UnitLevel(unit)
                         TrackRecentPlayer(name, classDisplay, classUpper, level)
                     end

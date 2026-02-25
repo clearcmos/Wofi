@@ -7,7 +7,7 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 
 ### Core Files
 - `Wofi.toc` - Addon manifest (Interface 20505 for Classic Anniversary)
-- `Wofi.lua` - All addon logic in a single file (~4200 lines)
+- `Wofi.lua` - All addon logic in a single file (~4400 lines)
 
 ### Key Components
 1. **Spell Cache** - Builds a searchable cache of all non-passive spells from the player's spellbook
@@ -23,14 +23,15 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 11. **Addon Cache** - Scans all installed addons via C_AddOns API; includes name, title, notes, enabled/loaded state; click toggles enable/disable
 12. **Instance/Boss Cache** - Indexes dungeon/raid instances and boss encounters from AtlasLoot (optional dependency); pre-caches item data for loot browser
 13. **Search UI** - Minimalist popup with EditBox for typing and results frame
-12. **SecureActionButtons** - Result buttons use SecureActionButtonTemplate for spells (`type="spell"`), items (`type="item"`), and macros (`type="macro"`)
-13. **Tradeskill Craft Popup** - Quantity input with reagent display, live bag counts, MAX button, and secure create button
-14. **Merchant Search Overlay** - Search bar that appears on merchant windows with buy/quantity functionality
-15. **Craft Progress Alert** - Center-screen notification showing remaining craft count with fade animations and cancel detection
-16. **Keybind System** - Custom keybind stored in SavedVariables, applied via SetBindingClick on a macro button
-17. **Loot Browser** - Full-featured AtlasLoot-powered instance loot viewer with scroll frame, difficulty buttons (Normal/Heroic), expandable tier set sections grouped by class with spec labels, async item resolution via GET_ITEM_INFO_RECEIVED, Shift-click to link items in chat
-18. **Config GUI** - Options panel for settings (opened via `/wofi config`)
-19. **Welcome Screen** - First-run setup dialog shown on initial install
+14. **SecureActionButtons** - Result buttons use SecureActionButtonTemplate for spells (`type="spell"`), items (`type="item"`), and macros (`type="macro"`)
+15. **Tradeskill Craft Popup** - Quantity input with reagent display, live bag counts, MAX button, and secure create button
+16. **Merchant Search Overlay** - Search bar that appears on merchant windows with buy/quantity functionality
+17. **Craft Progress Alert** - Center-screen notification showing remaining craft count with fade animations and cancel detection
+18. **Keybind System** - Custom keybind stored in SavedVariables, applied via SetBindingClick on a macro button
+19. **Loot Browser** - Full-featured AtlasLoot-powered instance loot viewer with scroll frame, difficulty buttons (Normal/Heroic), expandable tier set sections grouped by class with spec labels, async item resolution via GET_ITEM_INFO_RECEIVED, Shift-click to link items in chat
+20. **Config GUI** - Options panel for settings (opened via `/wofi config`)
+21. **Appearance Preview** - Live launcher preview while adjusting appearance sliders in config
+22. **Welcome Screen** - First-run setup dialog shown on initial install
 
 ### WoW API Constraints
 - **Spell/item usage requires SecureActionButtonTemplate** - Cannot call CastSpell() or UseItem() directly
@@ -59,6 +60,10 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 - `includeAddons` (boolean) - Whether to include installed addons in search results
 - `includeInstances` (boolean) - Whether to include dungeon/raid instances and bosses in search results (requires AtlasLoot)
 - `welcomeShown` (boolean) - Whether the first-run welcome screen has been shown
+- `launcherWidth` (number) - Width of the launcher popup in pixels (default 480, range 250-600)
+- `launcherHeight` (number) - Height of the launcher bar in pixels (default 46, range 30-70)
+- `entryFontSize` (number) - Font size for result entry names on the left (default 14, range 8-22)
+- `descriptorFontSize` (number) - Font size for category tags and details on the right (default 10, range 7-16)
 - `tradeskillCache` (table) - Persisted recipe data across sessions for all scanned professions
 
 ## Entry Types
@@ -68,7 +73,7 @@ Each search result has an `entryType` field:
 - `"macro"` - Player macro, uses `btn:SetAttribute("type", "macro")` and `btn:SetAttribute("macro", macroIndex)`
 - `"tradeskill"` - Profession recipe, opens craft quantity popup on click (not a secure action itself)
 - `"player"` - Online player (friend/BNet/guild/recent), opens whisper via `ChatFrame_SendTell()` (not a secure action)
-- `"zone"` - Game zone, opens World Map to that zone on click (not a secure action)
+- `"map"` - Game zone, opens World Map to that zone on click (not a secure action)
 - `"lockout"` - Saved instance (raid/heroic), opens Raid Info panel via `ToggleFriendsFrame(4)` on click; reset timer computed live from stored `expiresAt` timestamp
 - `"quest"` - Active quest (requires Questie), selects quest log entry and opens World Map; uses Questie API for zone navigation
 - `"reputation"` - Player faction reputation, opens Reputation panel via `ToggleCharacter("ReputationFrame")` on click; displays standing label color-coded with `FACTION_BAR_COLORS` and comma-formatted progress (e.g., `[Honored 5,000/12,000]`)
@@ -116,6 +121,15 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 - Quest results show `[quest]` indicator with completion status; clicking opens quest log and World Map (Questie-enhanced navigation)
 - Reputation results show `[Standing current/max]` tag (e.g., `[Honored 5,000/12,000]`) color-coded by standing; clicking opens Reputation panel
 - `FormatNumber()` utility formats numbers with thousands separators (e.g., 12345 → "12,345"); used in reputation displays
+- `FormatPrice()` utility formats copper values into colored gold/silver/copper display strings; used in merchant search
+- `TitleCase()` utility capitalizes first character and lowercases the rest (e.g., "HUNTER" → "Hunter"); used for class name display
+- `GetCacheStatsString()` builds a human-readable cache counts string; shared by config panel stats, refresh button, and `/wofi refresh`
+- `SetAutoCraftHiding(enabled)` toggles `tradeskillHider` OnUpdate on/off to suppress TradeSkillFrame during auto-scan/craft (OnUpdate only runs when actively hiding)
+- `ApplyLayoutSettings()` applies launcher width/height and font sizes to the live UI; called at startup and by appearance slider onChange callbacks
+- `playerName` cached at PLAYER_LOGIN — avoids repeated `UnitName("player")` calls throughout the file
+- Reusable table pattern: `formatNumberParts`, `formatPriceParts`, `playerDetailParts`, `merchantSearchResults` are file-scope tables that get `wipe()`d and reused to reduce GC pressure
+- Localized APIs at file scope: `GetTradeskillRepeatCount`, `math.rad` (as `rad`), `math.huge` (as `HUGE`), `table.concat` (as `tconcat`), `strbyte`
+- Player results show inline detail text (level, class-colored class name, zone) in small font via `btn.detailText`, separate from name (`btn.text`) and source tag (`btn.typeText`)
 - Player results show source tag (`[friend]`, `[bnet]`, `[guild]`, `[coguild]`, `[recent]`) with class icons and colored indicators
 - Result buttons use `RegisterForClicks("LeftButtonDown")` for immediate spell/item activation
 - Result buttons use `RegisterForDrag("RightButton")` to allow placing spells/items/macros on action bars
@@ -136,6 +150,7 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 The config panel (`/wofi config`) uses the native Settings API (ESC > Options > AddOns > Wofi):
 - **Search section**: Checkboxes for include items, include macros, include tradeskills, include players, include zones, include lockouts, include quests (requires Questie), include reputations, include addons, include instances & bosses (requires AtlasLoot), show all spell ranks
 - **Display section**: Max results slider (4-12), show craft progress notification, show merchant search bar
+- **Appearance section**: Launcher width slider (250-600), launcher bar height slider (30-70), entry font size slider (8-22), descriptor font size slider (7-16); all sliders trigger a live preview of the launcher on the left side of the screen
 - **Keybind section**: Current binding display, Set/Clear buttons
 - **Cache section**: Refresh caches button, cache stats display (spell/item/macro/recipe/player/zone/lockout/quest/reputation/addon/instance+boss counts)
 
@@ -210,6 +225,9 @@ This creates `~/Wofi-x.x.x.zip` containing a `Wofi/` folder with the addon files
 40. In loot browser - verify Normal/Heroic difficulty buttons work for dungeons with multiple difficulties
 41. In loot browser - verify tier set class rows expand/collapse, and state resets when switching instances
 42. In loot browser - Shift-click an item to verify it links in chat
+43. Open `/wofi config` Appearance section - drag width/height/font sliders, verify live preview appears on the left side of the screen
+44. Verify preview auto-hides after 3 seconds of inactivity
+45. Close config, reopen Wofi - verify saved dimensions and font sizes persist
 
 ## WoW API Reference
 
