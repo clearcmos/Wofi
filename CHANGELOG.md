@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.0
+
+### Added
+- **Appearance customization** - Configurable launcher width, bar height, entry font size, and descriptor font size via config GUI sliders with live preview
+- **Player details** - Inline level, class, and zone display for friends, guild members, and BNet friends in search results
+
+### Improved
+- Localized hot-path functions (`strbyte`, `table.concat`)
+- Reusable tables with `wipe()` in FormatNumber, FormatPrice, player details, and merchant search
+- Extracted helpers: `TitleCase`, `GetCacheStatsString`, `SetAutoCraftHiding`
+- Cached `UnitName("player")` to avoid repeated API calls
+- Removed dead global (`atlasLootModuleLoaded`) and unused variable (`playerMsg`)
+- Changed addon icon to INV_Misc_PunchCards_Blue (FileDataID 134390)
+
 ## v1.2.0
 
 ### Added
