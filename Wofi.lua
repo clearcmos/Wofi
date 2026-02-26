@@ -371,11 +371,13 @@ local function GetUsableItemInfo(bagID, slotID)
     return nil
 end
 
+local itemCacheRetries = 0
 local function BuildItemCache()
     wipe(itemCache)
 
     -- Scan all bags (0 = backpack, 1-4 = bags)
     local seenIDs = {}  -- deduplicate stacks of the same item
+    local missed = 0
     for bagID = 0, 4 do
         local numSlots = C_Container.GetContainerNumSlots(bagID)
         for slotID = 1, numSlots do
@@ -394,6 +396,8 @@ local function BuildItemCache()
                             texture = itemTexture or info.iconFileID,
                             nameLower = itemName:lower(),
                         })
+                    else
+                        missed = missed + 1
                     end
                 end
             end
@@ -403,6 +407,14 @@ local function BuildItemCache()
     -- Sort alphabetically
     sort(itemCache, function(a, b) return a.name < b.name end)
     itemCacheBuilt = true
+
+    -- Retry if GetItemInfo returned nil for some items (async data not loaded yet)
+    if missed > 0 and itemCacheRetries < 3 then
+        itemCacheRetries = itemCacheRetries + 1
+        C_Timer.After(2, BuildItemCache)
+    else
+        itemCacheRetries = 0
+    end
 end
 
 -- ============================================================================
