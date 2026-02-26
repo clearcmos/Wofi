@@ -1776,7 +1776,12 @@ local function CreateUI()
             addon:UpdateSelection()
             UpdateEnterBinding()
         else
-            self:SetPropagateKeyboardInput(false)
+            -- Propagate modifier combos (CTRL/ALT held) so the keybind can toggle Wofi closed
+            if IsControlKeyDown() or IsAltKeyDown() then
+                self:SetPropagateKeyboardInput(true)
+            else
+                self:SetPropagateKeyboardInput(false)
+            end
         end
     end)
 
@@ -2281,6 +2286,7 @@ local function RegisterSettings()
     local keybindInit = CreateFromMixins(SettingsListElementInitializer)
     keybindInit:Init("SettingsListSectionHeaderTemplate", {name = ""})
     keybindInit.GetExtent = function() return 60 end
+    local keybindLabelRef
     local function HideWofiContainers(f)
         if f.wofiKeybindContainer then f.wofiKeybindContainer:Hide() end
         if f.wofiCacheContainer then f.wofiCacheContainer:Hide() end
@@ -2318,8 +2324,9 @@ local function RegisterSettings()
             clearBtn:SetText("Clear")
             clearBtn:SetScript("OnClick", function()
                 if WofiDB.keybind then
-                    SetBinding(WofiDB.keybind, nil)
-                    SaveBindings(GetCurrentBindingSet())
+                    if toggleButton then
+                        ClearOverrideBindings(toggleButton)
+                    end
                     WofiDB.keybind = nil
                     frame.keybindLabel:SetText("Current: |cff808080Not set|r")
                     print("|cff00ff00Wofi:|r Keybind cleared")
@@ -2328,18 +2335,23 @@ local function RegisterSettings()
         end
 
         frame.wofiKeybindContainer:Show()
+        keybindLabelRef = frame.keybindLabel
 
         if WofiDB.keybind then
-            frame.keybindLabel:SetText("Current: |cff80ff80" .. WofiDB.keybind .. "|r")
+            keybindLabelRef:SetText("Current: |cff80ff80" .. WofiDB.keybind .. "|r")
         else
-            frame.keybindLabel:SetText("Current: |cff808080Not set|r")
+            keybindLabelRef:SetText("Current: |cff808080Not set|r")
         end
     end
     layout:AddInitializer(keybindInit)
 
     addon.UpdateKeybindLabel = function()
-        if settingsCategoryID then
-            Settings.OpenToCategory(settingsCategoryID)
+        if keybindLabelRef then
+            if WofiDB.keybind then
+                keybindLabelRef:SetText("Current: |cff80ff80" .. WofiDB.keybind .. "|r")
+            else
+                keybindLabelRef:SetText("Current: |cff808080Not set|r")
+            end
         end
     end
 
@@ -3876,7 +3888,7 @@ end
 local function ApplyKeybind()
     if WofiDB and WofiDB.keybind then
         CreateToggleButton()
-        SetBindingClick(WofiDB.keybind, "WofiToggleButton")
+        SetOverrideBindingClick(toggleButton, true, WofiDB.keybind, "WofiToggleButton")
     end
 end
 
@@ -3905,13 +3917,13 @@ local function SetupKeybindListener()
             return
         end
 
-        -- Build the key string with modifiers
+        -- Build the key string with modifiers (alphabetical order: ALT-CTRL-SHIFT, per WoW API)
         local keyStr = ""
-        if IsControlKeyDown() and key ~= "LCTRL" and key ~= "RCTRL" then
-            keyStr = "CTRL-"
-        end
         if IsAltKeyDown() and key ~= "LALT" and key ~= "RALT" then
-            keyStr = keyStr .. "ALT-"
+            keyStr = "ALT-"
+        end
+        if IsControlKeyDown() and key ~= "LCTRL" and key ~= "RCTRL" then
+            keyStr = keyStr .. "CTRL-"
         end
         if IsShiftKeyDown() and key ~= "LSHIFT" and key ~= "RSHIFT" then
             keyStr = keyStr .. "SHIFT-"
@@ -3924,16 +3936,14 @@ local function SetupKeybindListener()
 
         keyStr = keyStr .. key
 
-        -- Clear old binding
-        if WofiDB.keybind then
-            SetBinding(WofiDB.keybind, nil)
-        end
-
-        -- Set new binding
+        -- Set new binding (create toggle button first for ClearOverrideBindings)
         CreateToggleButton()
+
+        -- Clear old override binding
+        ClearOverrideBindings(toggleButton)
+
         WofiDB.keybind = keyStr
-        SetBindingClick(keyStr, "WofiToggleButton")
-        SaveBindings(GetCurrentBindingSet())
+        SetOverrideBindingClick(toggleButton, true, keyStr, "WofiToggleButton")
 
         self:Hide()
         if addon.UpdateKeybindLabel then addon.UpdateKeybindLabel() end
@@ -4147,16 +4157,16 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
                     end
                 end)
             end
-            -- Apply or clear keybind
+            -- Clean up any legacy regular binding (from pre-override code)
+            local legacyKey = GetBindingKey("CLICK WofiToggleButton:LeftButton")
+            if legacyKey then
+                SetBinding(legacyKey, nil)
+                SaveBindings(GetCurrentBindingSet())
+            end
+
+            -- Apply keybind using override bindings (takes priority over WoW default bindings)
             if WofiDB.keybind then
                 ApplyKeybind()
-            else
-                -- Clear any orphaned WoW binding to the toggle button
-                local key = GetBindingKey("CLICK WofiToggleButton:LeftButton")
-                if key then
-                    SetBinding(key, nil)
-                    SaveBindings(GetCurrentBindingSet())
-                end
             end
             local bindMsg = WofiDB.keybind and (" Keybind: |cff88ff88" .. WofiDB.keybind .. "|r") or ""
             local tradeMsg = #tradeskillCache > 0 and (", " .. #tradeskillCache .. " recipes cached") or ""

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.1
+
+### Fixed
+- **Keybind CTRL-ALT combos not working** - Modifier keys now use WoW's canonical alphabetical order (ALT-CTRL-SHIFT) so bindings like ALT-CTRL-F register correctly
+- **Keybind label not updating in config GUI** - Setting a new keybind now immediately updates the "Current:" label without needing to reopen the panel
+
+### Improved
+- Keybinds now use override bindings (`SetOverrideBindingClick`) which take priority over conflicting WoW default bindings
+- Modifier keybinds (CTRL/ALT combos) now toggle the launcher closed when pressed while open
+
 ## v1.3.0
 
 ### Added
