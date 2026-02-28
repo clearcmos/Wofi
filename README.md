@@ -21,7 +21,7 @@ Built specifically for **TBC Classic Anniversary**.
 - **Quest search** - Search active quests with completion status; click to open quest log and map (enhanced with Questie if installed)
 - **Reputation search** - Search all faction reputations with standing level and progress (e.g., `[Honored 5,000/12,000]`); click to open the Reputation panel
 - **Addon manager** - Search installed addons, click to enable/disable without opening the Blizzard UI
-- **Loot browser** - Browse dungeon and raid loot tables with difficulty selection and expandable tier set groups (requires AtlasLoot)
+- **Loot browser** - Browse dungeon and raid loot tables with difficulty selection, expandable tier set groups, Shift-hover item comparison, and boss highlight when navigating from search (requires AtlasLoot)
 - **Keyboard-driven** - Navigate with arrow keys or Tab, activate with Enter
 - **Drag to action bar** - Right-drag spells, items, and macros to place them on your bars
 - **Customizable appearance** - Adjust launcher width, height, and font sizes with live preview

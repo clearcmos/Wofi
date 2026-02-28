@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.4.0
+
+### Added
+- **Loot browser item comparison** - Hold Shift while hovering an item to compare with your equipped gear
+- **Boss loot highlight** - Searching a boss name and opening the loot browser highlights that boss's loot section with a pulsing gold border
+- **Ctrl+A select all** - Ctrl+A now selects all text in the launcher search box instead of strafing your character
+
+### Fixed
+- **Zone map ESC close** - Opening a zone from the launcher now properly allows ESC to close the World Map
+- **Uncached quest items** - Items with uncached data are no longer silently excluded from the item cache
+
+### Improved
+- Loot browser item names now word-wrap to a second line instead of truncating with "..."
+- Loot browser uses MEDIUM frame strata so character pane and other panels layer above it
+- Fuzzy match search results now use object pooling to reduce garbage collection pressure
+
 ## v1.3.1
 
 ### Fixed

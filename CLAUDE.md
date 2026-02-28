@@ -7,7 +7,7 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 
 ### Core Files
 - `Wofi.toc` - Addon manifest (Interface 20505 for Classic Anniversary)
-- `Wofi.lua` - All addon logic in a single file (~4400 lines)
+- `Wofi.lua` - All addon logic in a single file (~4500 lines)
 
 ### Key Components
 1. **Spell Cache** - Builds a searchable cache of all non-passive spells from the player's spellbook
@@ -28,7 +28,7 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 16. **Merchant Search Overlay** - Search bar that appears on merchant windows with buy/quantity functionality
 17. **Craft Progress Alert** - Center-screen notification showing remaining craft count with fade animations and cancel detection
 18. **Keybind System** - Custom keybind stored in SavedVariables, applied via SetBindingClick on a macro button
-19. **Loot Browser** - Full-featured AtlasLoot-powered instance loot viewer with scroll frame, difficulty buttons (Normal/Heroic), expandable tier set sections grouped by class with spec labels, async item resolution via GET_ITEM_INFO_RECEIVED, Shift-click to link items in chat
+19. **Loot Browser** - Full-featured AtlasLoot-powered instance loot viewer with scroll frame, difficulty buttons (Normal/Heroic), expandable tier set sections grouped by class with spec labels, async item resolution via GET_ITEM_INFO_RECEIVED, Shift-click to link items in chat, Shift-hover to compare with equipped items, boss section highlight when navigated from launcher search
 20. **Config GUI** - Options panel for settings (opened via `/wofi config`)
 21. **Appearance Preview** - Live launcher preview while adjusting appearance sliders in config
 22. **Welcome Screen** - First-run setup dialog shown on initial install
@@ -116,7 +116,7 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 - Items show `[item]` indicator in results, spells show rank (e.g., "Rank 5") if available
 - Macros show `[macro]` indicator in light blue, tooltip shows first 5 lines of macro body
 - Tradeskill results show difficulty color and `[craft: N]` count (or `[craft: 0]` greyed out)
-- Zone results show `[zone]` indicator; clicking opens World Map to that zone
+- Zone results show `[zone]` indicator; clicking opens World Map to that zone via `ToggleWorldMap()` + deferred `SetMapID`
 - Lockout results show `[progress | time]` with live countdown; clicking opens Raid Info panel (`ToggleFriendsFrame(4)`)
 - Quest results show `[quest]` indicator with completion status; clicking opens quest log and World Map (Questie-enhanced navigation)
 - Reputation results show `[Standing current/max]` tag (e.g., `[Honored 5,000/12,000]`) color-coded by standing; clicking opens Reputation panel
@@ -127,7 +127,7 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 - `SetAutoCraftHiding(enabled)` toggles `tradeskillHider` OnUpdate on/off to suppress TradeSkillFrame during auto-scan/craft (OnUpdate only runs when actively hiding)
 - `ApplyLayoutSettings()` applies launcher width/height and font sizes to the live UI; called at startup and by appearance slider onChange callbacks
 - `playerName` cached at PLAYER_LOGIN — avoids repeated `UnitName("player")` calls throughout the file
-- Reusable table pattern: `formatNumberParts`, `formatPriceParts`, `playerDetailParts`, `merchantSearchResults` are file-scope tables that get `wipe()`d and reused to reduce GC pressure
+- Reusable table pattern: `formatNumberParts`, `formatPriceParts`, `playerDetailParts`, `merchantSearchResults`, `fuzzyPool` are file-scope tables that get `wipe()`d/pooled and reused to reduce GC pressure
 - Localized APIs at file scope: `GetTradeskillRepeatCount`, `math.rad` (as `rad`), `math.huge` (as `HUGE`), `table.concat` (as `tconcat`), `strbyte`
 - Player results show inline detail text (level, class-colored class name, zone) in small font via `btn.detailText`, separate from name (`btn.text`) and source tag (`btn.typeText`)
 - Player results show source tag (`[friend]`, `[bnet]`, `[guild]`, `[coguild]`, `[recent]`) with class icons and colored indicators
@@ -144,6 +144,11 @@ Note: Keybind, item/macro/tradeskill toggles, and display options are all manage
 - Instance results show `[dungeon]` (cyan) or `[raid]` (purple) tag; clicking opens the loot browser
 - Boss results show `[instanceName]` tag in grey; clicking opens loot browser scrolled to that boss; creature portrait displayed via `SetPortraitTextureFromCreatureDisplayID` when available
 - Loot browser uses object pooling for item frames and boss headers; expand/collapse state resets when switching instances; tier set sections grouped by class with spec labels derived from set name suffixes
+- Loot browser item names use `GameFontNormal` with word wrap enabled (`SetMaxLines(2)`) and taller item frames (`LOOT_ITEM_HEIGHT = 40`) to avoid truncation
+- Loot browser Shift-hover triggers `GameTooltip_ShowCompareItem()` to compare with equipped items; uses `MODIFIER_STATE_CHANGED` event on item frames for mid-hover Shift press/release
+- Loot browser boss highlight: when navigated from a boss search result, a pulsing gold border (`ShowBossHighlight`) frames the target boss's loot section; animation runs for 5 seconds then settles to a static dim border
+- Loot browser frame strata is `MEDIUM` (not `DIALOG`) so character pane and other panels layer above it
+- Launcher EditBox intercepts Ctrl+A to select all text (`HighlightText()`) instead of propagating to game keybinds
 - AtlasLoot integration (optional, listed in TOC as `OptionalDeps: AtlasLootClassic`): loads `AtlasLootClassic_DungeonsAndRaids` module on demand via `AtlasLoot.Loader:LoadModule`; item data pre-cached at login for async resolution
 
 ## Config GUI
@@ -208,7 +213,7 @@ This creates `~/Wofi-x.x.x.zip` containing a `Wofi/` folder with the addon files
 23. Target a player - verify they appear as `[recent]`
 24. Guild members - verify online guildies appear with `[guild]` tag
 25. GreenWall (if installed) - verify co-guild members appear with `[coguild]` tag after they chat
-26. Type a zone name (e.g., "shatt") - verify `[zone]` tag, click opens World Map to that zone
+26. Type a zone name (e.g., "shatt") - verify `[zone]` tag, click opens World Map to that zone, ESC closes the map
 27. Search for a raid/heroic lockout - verify live reset timer and boss progress
 28. Click/Enter a lockout result - verify Raid Info panel opens
 29. Accept/complete a quest - verify quest cache updates (requires Questie)
@@ -225,9 +230,14 @@ This creates `~/Wofi-x.x.x.zip` containing a `Wofi/` folder with the addon files
 40. In loot browser - verify Normal/Heroic difficulty buttons work for dungeons with multiple difficulties
 41. In loot browser - verify tier set class rows expand/collapse, and state resets when switching instances
 42. In loot browser - Shift-click an item to verify it links in chat
-43. Open `/wofi config` Appearance section - drag width/height/font sliders, verify live preview appears on the left side of the screen
-44. Verify preview auto-hides after 3 seconds of inactivity
-45. Close config, reopen Wofi - verify saved dimensions and font sizes persist
+43. In loot browser - Shift-hover an item to verify equipped item comparison tooltips appear
+44. In loot browser - search a boss name from launcher, verify gold pulsing border highlights that boss's loot section
+45. In loot browser - verify highlight pulse stops after ~5 seconds and settles to static border
+46. In loot browser - open character pane (C) while loot browser is open, verify it layers above the loot browser
+47. In launcher - press Ctrl+A to verify all search text is selected (not strafing character)
+48. Open `/wofi config` Appearance section - drag width/height/font sliders, verify live preview appears on the left side of the screen
+49. Verify preview auto-hides after 3 seconds of inactivity
+50. Close config, reopen Wofi - verify saved dimensions and font sizes persist
 
 ## WoW API Reference
 

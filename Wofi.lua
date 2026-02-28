@@ -363,7 +363,9 @@ local function GetUsableItemInfo(bagID, slotID)
     if itemSpell then return info end
 
     -- Check if it's a Quest item (quest starters, etc.)
-    if select(6, GetItemInfo(info.itemID)) == "Quest" then return info end
+    local itemType = select(6, GetItemInfo(info.itemID))
+    if itemType == nil then return info end  -- uncached: include it, BuildItemCache will retry via GetItemInfo
+    if itemType == "Quest" then return info end
 
     -- Check if item is flagged as readable/usable (some quest items)
     if info.isReadable then return info end
@@ -1069,6 +1071,7 @@ end
 -- Reusable search buckets (avoid table allocation on every keystroke)
 local searchExact, searchStart, searchContains, searchFuzzy = {}, {}, {}, {}
 local searchResults = {}
+local fuzzyPool, fuzzyPoolUsed = {}, 0
 
 -- Match entries from a cache into the four priority buckets
 local function MatchEntries(cache, queryLower, exactMatches, startMatches, containsMatches, fuzzyMatches)
@@ -1083,7 +1086,16 @@ local function MatchEntries(cache, queryLower, exactMatches, startMatches, conta
         else
             local score = FuzzyMatch(queryLower, entry.nameLower)
             if score then
-                tinsert(fuzzyMatches, { entry = entry, score = score })
+                fuzzyPoolUsed = fuzzyPoolUsed + 1
+                local t = fuzzyPool[fuzzyPoolUsed]
+                if t then
+                    t.entry = entry
+                    t.score = score
+                else
+                    t = { entry = entry, score = score }
+                    fuzzyPool[fuzzyPoolUsed] = t
+                end
+                tinsert(fuzzyMatches, t)
             end
         end
     end
@@ -1092,6 +1104,7 @@ end
 local function Search(query)
     wipe(searchExact); wipe(searchStart); wipe(searchContains); wipe(searchFuzzy)
     wipe(searchResults)
+    fuzzyPoolUsed = 0
     if not query or query == "" then return searchResults end
 
     local queryLower = query:lower()
@@ -1198,6 +1211,7 @@ local merchantSearchResults = {}
 local function SearchMerchant(query)
     wipe(searchExact); wipe(searchStart); wipe(searchContains); wipe(searchFuzzy)
     wipe(merchantSearchResults)
+    fuzzyPoolUsed = 0
     if not query or query == "" then return merchantSearchResults end
 
     local queryLower = query:lower()
@@ -1418,10 +1432,11 @@ local function CreateResultButton(parent, index)
         if self.entry.entryType == TYPE_MAP then
             WofiFrame:Hide()
             local targetMapID = self.entry.mapID
-            ShowUIPanel(WorldMapFrame)
-            -- Defer one tick so OnShow's player-zone reset doesn't override us
+            if not WorldMapFrame:IsShown() then
+                ToggleWorldMap()
+            end
             C_Timer.After(0, function()
-                if WorldMapFrame.SetMapID then
+                if WorldMapFrame:IsShown() and WorldMapFrame.SetMapID then
                     WorldMapFrame:SetMapID(targetMapID)
                 end
             end)
@@ -1788,8 +1803,12 @@ local function CreateUI()
             addon:UpdateSelection()
             UpdateEnterBinding()
         else
-            -- Propagate modifier combos (CTRL/ALT held) so the keybind can toggle Wofi closed
-            if IsControlKeyDown() or IsAltKeyDown() then
+            -- Ctrl+A = select all text in the search box
+            if IsControlKeyDown() and key == "A" then
+                self:SetPropagateKeyboardInput(false)
+                self:HighlightText()
+            -- Propagate other modifier combos (CTRL/ALT held) so the keybind can toggle Wofi closed
+            elseif IsControlKeyDown() or IsAltKeyDown() then
                 self:SetPropagateKeyboardInput(true)
             else
                 self:SetPropagateKeyboardInput(false)
@@ -3264,7 +3283,7 @@ end
 
 local LOOT_BROWSER_WIDTH = 690
 local LOOT_BROWSER_HEIGHT = 750
-local LOOT_ITEM_HEIGHT = 28
+local LOOT_ITEM_HEIGHT = 40
 local LOOT_ICON_SIZE = 26
 local LOOT_ITEMS_PER_ROW = 3
 local LOOT_ITEM_WIDTH = 215
@@ -3288,6 +3307,7 @@ local lootItemPoolUsed = 0
 local lootBossHeaders = {}
 local lootBossHeadersUsed = 0
 local lootPendingItems = {}  -- [itemID] = {frame1, frame2, ...} for async resolution
+local lootBossHighlight     -- reusable highlight frame for scroll-to-boss
 
 local PopulateLootBrowser  -- forward declaration for click handlers
 
@@ -3315,7 +3335,9 @@ local function GetOrCreateLootItem(parent)
     f.text:SetPoint("LEFT", f.icon, "RIGHT", 4, 0)
     f.text:SetPoint("RIGHT", -2, 0)
     f.text:SetJustifyH("LEFT")
-    f.text:SetWordWrap(false)
+    f.text:SetJustifyV("MIDDLE")
+    f.text:SetWordWrap(true)
+    f.text:SetMaxLines(2)
 
     f:EnableMouse(true)
     f:SetScript("OnEnter", function(self)
@@ -3326,13 +3348,28 @@ local function GetOrCreateLootItem(parent)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetHyperlink(self.itemLink)
             GameTooltip:Show()
+            -- Shift-compare is handled automatically by GameTooltip_OnTooltipSetItem
+            -- when Shift is already held; register event for mid-hover Shift press
+            self:RegisterEvent("MODIFIER_STATE_CHANGED")
         end
     end)
     f:SetScript("OnLeave", function(self)
         if self.expandType then
             self.bg:SetColorTexture(self.bgR or 0, self.bgG or 0, self.bgB or 0, self.bgA or 0)
         end
+        self:UnregisterEvent("MODIFIER_STATE_CHANGED")
         GameTooltip:Hide()
+    end)
+    f:SetScript("OnEvent", function(self, event, key, state)
+        if event == "MODIFIER_STATE_CHANGED" and self.itemLink then
+            if (key == "LSHIFT" or key == "RSHIFT") then
+                if state == 1 then
+                    GameTooltip_ShowCompareItem()
+                else
+                    GameTooltip_HideShoppingTooltips(GameTooltip)
+                end
+            end
+        end
     end)
     f:SetScript("OnMouseUp", function(self, button)
         if button == "LeftButton" then
@@ -3405,6 +3442,50 @@ local function HidePooledFrames()
         lootBossHeaders[i]:ClearAllPoints()
     end
     lootBossHeadersUsed = 0
+    if lootBossHighlight then
+        lootBossHighlight:Hide()
+    end
+end
+
+local function ShowBossHighlight(scrollChild, yTop, yBottom)
+    if not lootBossHighlight then
+        local f = CreateFrame("Frame", nil, scrollChild, "BackdropTemplate")
+        f:SetFrameLevel(scrollChild:GetFrameLevel() + 1)
+        f:SetBackdrop({
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 24,
+            insets = { left = 4, right = 4, top = 4, bottom = 4 },
+        })
+        f:SetBackdropBorderColor(1, 0.82, 0, 1)
+        -- Inner glow
+        f.glow = f:CreateTexture(nil, "BACKGROUND")
+        f.glow:SetAllPoints()
+        f.glow:SetColorTexture(1, 0.82, 0, 0.15)
+        -- Pulse animation via OnUpdate, fades out after 5 seconds
+        f.elapsed = 0
+        f:SetScript("OnUpdate", function(self, elapsed)
+            self.elapsed = self.elapsed + elapsed
+            if self.elapsed > 5 then
+                -- Settle to static dim border
+                self:SetBackdropBorderColor(1, 0.82, 0, 0.4)
+                self.glow:SetAlpha(0.06)
+                self:SetScript("OnUpdate", nil)
+                return
+            end
+            local pulse = sin(self.elapsed * 180)
+            self:SetBackdropBorderColor(1, 0.82, 0, 0.7 + 0.3 * pulse)
+            self.glow:SetAlpha(0.12 + 0.08 * pulse)
+        end)
+        lootBossHighlight = f
+    end
+    lootBossHighlight:SetParent(scrollChild)
+    lootBossHighlight:ClearAllPoints()
+    local pad = 10  -- push border outward so edges don't overlap text
+    local sectionHeight = abs(yTop - yBottom)
+    lootBossHighlight:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", -pad, yTop + pad)
+    lootBossHighlight:SetSize(scrollChild:GetWidth() + pad * 2, sectionHeight + pad * 2)
+    lootBossHighlight.elapsed = 0
+    lootBossHighlight:Show()
 end
 
 -- Helper: configure a pooled frame as a full-width expandable row
@@ -3679,6 +3760,17 @@ PopulateLootBrowser = function(instanceKey, difficulty, scrollToBossIndex, prese
         local scrollMax = lootBrowserFrame.scrollFrame:GetVerticalScrollRange()
         local targetScroll = abs(bossYPositions[scrollToBossIndex])
         lootBrowserFrame.scrollFrame:SetVerticalScroll(min(targetScroll, scrollMax))
+        -- Highlight the target boss section
+        local yTop = bossYPositions[scrollToBossIndex]
+        -- Find the closest next boss Y position, or use end of content
+        local nextBossIdx
+        for idx in pairs(bossYPositions) do
+            if idx > scrollToBossIndex and (not nextBossIdx or idx < nextBossIdx) then
+                nextBossIdx = idx
+            end
+        end
+        local yBottom = nextBossIdx and (bossYPositions[nextBossIdx] + 10) or yOffset
+        ShowBossHighlight(scrollChild, yTop, yBottom)
     elseif not preserveScroll then
         lootBrowserFrame.scrollFrame:SetVerticalScroll(0)
     end
@@ -3690,7 +3782,7 @@ local function CreateLootBrowser()
     local f = CreateFrame("Frame", "WofiLootBrowserFrame", UIParent, "BackdropTemplate")
     f:SetSize(LOOT_BROWSER_WIDTH, LOOT_BROWSER_HEIGHT)
     f:SetPoint("CENTER")
-    f:SetFrameStrata("DIALOG")
+    f:SetFrameStrata("MEDIUM")
     f:SetBackdrop({
         bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
