@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.4.1
+
+### Fixed
+- **Tradeskill cache shared across characters** - Recipe cache is now stored per-character so alts no longer see each other's profession recipes
+
 ## v1.4.0
 
 ### Added

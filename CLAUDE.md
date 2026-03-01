@@ -13,7 +13,7 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 1. **Spell Cache** - Builds a searchable cache of all non-passive spells from the player's spellbook
 2. **Item Cache** - Scans bags for usable items (items with GetItemSpell, quest items, readable items)
 3. **Macro Cache** - Scans account-wide (1-120) and character-specific (121-138) macros via GetMacroInfo
-4. **Tradeskill Cache** - Auto-scans all crafting professions on login to index recipes with reagent data; persisted in SavedVariables across sessions
+4. **Tradeskill Cache** - Auto-scans all crafting professions on login to index recipes with reagent data; persisted in SavedVariables per-character (keyed by `"CharName-RealmName"`)
 5. **Player Cache** - Indexes online friends, BNet friends (same server), guild members, GreenWall co-guild members (optional dependency), and recently interacted players; session-only recent and co-guild tracking
 6. **Zone Cache** - Indexes all game zones/subzones from C_Map for location search; walks up from GetFallbackWorldMapID() to Cosmic root to capture all continents (Azeroth + Outland); built once at login (static data)
 7. **Lockout Cache** - Indexes saved instance lockouts (raids/heroics) via GetSavedInstanceInfo; rebuilt on every Wofi open with RequestRaidInfo() for fresh server data; reset timers computed live from absolute expiry timestamps
@@ -64,7 +64,7 @@ Wofi (WoW + Rofi) is a WoW Classic Anniversary Edition (20505) addon that provid
 - `launcherHeight` (number) - Height of the launcher bar in pixels (default 46, range 30-70)
 - `entryFontSize` (number) - Font size for result entry names on the left (default 14, range 8-22)
 - `descriptorFontSize` (number) - Font size for category tags and details on the right (default 10, range 7-16)
-- `tradeskillCache` (table) - Persisted recipe data across sessions for all scanned professions
+- `tradeskillCache` (table) - Per-character keyed recipe data (`tradeskillCache["CharName-RealmName"] = {recipes}`); old flat-array format is auto-discarded on upgrade
 
 ## Entry Types
 Each search result has an `entryType` field:

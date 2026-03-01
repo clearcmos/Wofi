@@ -2941,9 +2941,13 @@ local function BuildTradeskillCache()
         end
     end
 
-    -- Persist to saved variables
+    -- Persist to saved variables (per-character keyed)
     if WofiDB then
-        WofiDB.tradeskillCache = tradeskillCache
+        local charKey = UnitName("player") .. "-" .. GetRealmName()
+        if not WofiDB.tradeskillCache then
+            WofiDB.tradeskillCache = {}
+        end
+        WofiDB.tradeskillCache[charKey] = tradeskillCache
     end
 end
 
@@ -4176,25 +4180,32 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, ...)
         CreateToggleButton()
         RegisterSettings()
 
-        -- Restore tradeskill cache from saved variables
-        if WofiDB.tradeskillCache and #WofiDB.tradeskillCache > 0 then
-            -- Remove old-format entries that lack professionName
-            local clean = {}
-            local loadSeen = {}
-            for _, entry in ipairs(WofiDB.tradeskillCache) do
-                if entry.professionName and entry.professionName ~= "UNKNOWN" then
-                    local key = entry.professionName .. ":" .. entry.name
-                    if not loadSeen[key] then
-                        loadSeen[key] = true
-                        tinsert(clean, entry)
+        -- Restore tradeskill cache from saved variables (per-character keyed)
+        if WofiDB.tradeskillCache then
+            local charKey = UnitName("player") .. "-" .. GetRealmName()
+            -- Discard old flat-array format (pre-per-character); auto-scan rebuilds it
+            if WofiDB.tradeskillCache[1] then
+                WofiDB.tradeskillCache = {}
+            end
+            local saved = WofiDB.tradeskillCache[charKey]
+            if saved and #saved > 0 then
+                local clean = {}
+                local loadSeen = {}
+                for _, entry in ipairs(saved) do
+                    if entry.professionName and entry.professionName ~= "UNKNOWN" then
+                        local key = entry.professionName .. ":" .. entry.name
+                        if not loadSeen[key] then
+                            loadSeen[key] = true
+                            tinsert(clean, entry)
+                        end
                     end
                 end
+                wipe(saved)
+                for _, entry in ipairs(clean) do
+                    tinsert(saved, entry)
+                end
+                tradeskillCache = saved
             end
-            wipe(WofiDB.tradeskillCache)
-            for _, entry in ipairs(clean) do
-                tinsert(WofiDB.tradeskillCache, entry)
-            end
-            tradeskillCache = WofiDB.tradeskillCache
         end
         eventFrame:UnregisterEvent("ADDON_LOADED")
 
